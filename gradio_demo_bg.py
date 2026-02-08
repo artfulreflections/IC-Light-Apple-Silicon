@@ -13,6 +13,7 @@ from utils import (
     get_default_scheduler, create_pipelines,
     encode_prompt_pair, pytorch2numpy, numpy2pytorch,
     resize_and_center_crop, resize_without_crop, run_rmbg,
+    clear_gpu_cache,
 )
 
 # CLI args and logging
@@ -51,7 +52,7 @@ t2i_pipe, i2i_pipe = create_pipelines(vae, text_encoder, tokenizer, unet, defaul
 
 
 @torch.inference_mode()
-def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source):
+def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, progress=None):
     if input_fg is None:
         raise gr.Error("Please upload a foreground image.")
     image_width = int(image_width) // 64 * 64
@@ -62,10 +63,10 @@ def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, 
     # Handle background source - synthetic backgrounds don't need input_bg
     if bg_source == BGSource.UPLOAD:
         if input_bg is None:
-            raise ValueError("Please upload a background image when using 'Use Background Image' mode")
+            raise gr.Error("Please upload a background image when using 'Use Background Image' mode")
     elif bg_source == BGSource.UPLOAD_FLIP:
         if input_bg is None:
-            raise ValueError("Please upload a background image when using 'Use Flipped Background Image' mode")
+            raise gr.Error("Please upload a background image when using 'Use Flipped Background Image' mode")
         input_bg = np.fliplr(input_bg)
     elif bg_source == BGSource.GREY:
         input_bg = np.zeros(shape=(image_height, image_width, 3), dtype=np.uint8) + 64
@@ -100,8 +101,12 @@ def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, 
     concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
     concat_conds = torch.cat([c[None, ...] for c in concat_conds], dim=1)
 
+    if progress:
+        progress(0.15, desc="Encoding prompts...")
     conds, unconds = encode_prompt_pair(prompt + ', ' + a_prompt, n_prompt, tokenizer, text_encoder, device)
 
+    if progress:
+        progress(0.25, desc="Generating (low-res)...")
     latents = t2i_pipe(
         prompt_embeds=conds,
         negative_prompt_embeds=unconds,
@@ -123,6 +128,8 @@ def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, 
         target_height=int(round(image_height * highres_scale / 64.0) * 64))
     for p in pixels]
 
+    if progress:
+        progress(0.55, desc="Refining (high-res)...")
     pixels = numpy2pytorch(pixels).to(device=vae.device, dtype=vae.dtype)
     latents = vae.encode(pixels).latent_dist.mode() * vae.config.scaling_factor
     latents = latents.to(device=unet.device, dtype=unet.dtype)
@@ -149,70 +156,101 @@ def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, 
         cross_attention_kwargs={'concat_conds': concat_conds},
     ).images.to(vae.dtype) / vae.config.scaling_factor
 
+    if progress:
+        progress(0.9, desc="Decoding...")
     pixels = vae.decode(latents).sample
     pixels = pytorch2numpy(pixels, quant=False)
 
+    clear_gpu_cache(device)
     return pixels, [fg, bg]
 
 
 @torch.inference_mode()
-def process_relight(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source):
-    input_fg, matting = run_rmbg(input_fg, rmbg, device)
-    results, extra_images = process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source)
-    results = [(x * 255.0).clip(0, 255).astype(np.uint8) for x in results]
-    # Ensure extra_images (fg, bg) are also in uint8 format for Gradio
-    extra_images = [img if img.dtype == np.uint8 else (img * 255.0).clip(0, 255).astype(np.uint8) if img.max() <= 1.0 else img.clip(0, 255).astype(np.uint8) for img in extra_images]
-    final_output = results + extra_images
-    return final_output
+def process_relight(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, progress=gr.Progress()):
+    try:
+        progress(0, desc="Removing background...")
+        input_fg, matting = run_rmbg(input_fg, rmbg, device)
+        progress(0.1, desc="Processing...")
+        results, extra_images = process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, progress=progress)
+        results = [(x * 255.0).clip(0, 255).astype(np.uint8) for x in results]
+        extra_images = [img if img.dtype == np.uint8 else (img * 255.0).clip(0, 255).astype(np.uint8) if img.max() <= 1.0 else img.clip(0, 255).astype(np.uint8) for img in extra_images]
+        progress(1.0, desc="Done!")
+        return results + extra_images
+    except gr.Error:
+        raise
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            clear_gpu_cache(device)
+            raise gr.Error("Out of GPU memory. Try reducing image size or number of samples.")
+        logger.exception("Runtime error during relighting")
+        raise gr.Error(f"An error occurred: {e}")
+    except Exception as e:
+        logger.exception("Unexpected error during relighting")
+        raise gr.Error(f"An error occurred: {e}")
 
 
 @torch.inference_mode()
-def process_normal(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source):
-    input_fg, matting = run_rmbg(input_fg, rmbg, device, sigma=16)
+def process_normal(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, progress=gr.Progress()):
+    try:
+        progress(0, desc="Removing background...")
+        input_fg, matting = run_rmbg(input_fg, rmbg, device, sigma=16)
 
-    print('left ...')
-    left = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.LEFT.value)[0][0]
+        progress(0.05, desc="Computing normals: left...")
+        left = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.LEFT.value)[0][0]
 
-    print('right ...')
-    right = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.RIGHT.value)[0][0]
+        progress(0.25, desc="Computing normals: right...")
+        right = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.RIGHT.value)[0][0]
 
-    print('bottom ...')
-    bottom = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.BOTTOM.value)[0][0]
+        progress(0.50, desc="Computing normals: bottom...")
+        bottom = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.BOTTOM.value)[0][0]
 
-    print('top ...')
-    top = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.TOP.value)[0][0]
+        progress(0.75, desc="Computing normals: top...")
+        top = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.TOP.value)[0][0]
 
-    inner_results = [left * 2.0 - 1.0, right * 2.0 - 1.0, bottom * 2.0 - 1.0, top * 2.0 - 1.0]
+        inner_results = [left * 2.0 - 1.0, right * 2.0 - 1.0, bottom * 2.0 - 1.0, top * 2.0 - 1.0]
 
-    ambient = (left + right + bottom + top) / 4.0
-    h, w, _ = ambient.shape
-    matting = resize_and_center_crop((matting[..., 0] * 255.0).clip(0, 255).astype(np.uint8), w, h).astype(np.float32)[..., None] / 255.0
+        progress(0.95, desc="Computing normal map...")
+        ambient = (left + right + bottom + top) / 4.0
+        h, w, _ = ambient.shape
+        matting = resize_and_center_crop((matting[..., 0] * 255.0).clip(0, 255).astype(np.uint8), w, h).astype(np.float32)[..., None] / 255.0
 
-    def safa_divide(a, b):
-        e = 1e-5
-        return ((a + e) / (b + e)) - 1.0
+        def safa_divide(a, b):
+            e = 1e-5
+            return ((a + e) / (b + e)) - 1.0
 
-    left = safa_divide(left, ambient)
-    right = safa_divide(right, ambient)
-    bottom = safa_divide(bottom, ambient)
-    top = safa_divide(top, ambient)
+        left = safa_divide(left, ambient)
+        right = safa_divide(right, ambient)
+        bottom = safa_divide(bottom, ambient)
+        top = safa_divide(top, ambient)
 
-    u = (right - left) * 0.5
-    v = (top - bottom) * 0.5
+        u = (right - left) * 0.5
+        v = (top - bottom) * 0.5
 
-    sigma = 10.0
-    u = np.mean(u, axis=2)
-    v = np.mean(v, axis=2)
-    h = (1.0 - u ** 2.0 - v ** 2.0).clip(0, 1e5) ** (0.5 * sigma)
-    z = np.zeros_like(h)
+        sigma = 10.0
+        u = np.mean(u, axis=2)
+        v = np.mean(v, axis=2)
+        h = (1.0 - u ** 2.0 - v ** 2.0).clip(0, 1e5) ** (0.5 * sigma)
+        z = np.zeros_like(h)
 
-    normal = np.stack([u, v, h], axis=2)
-    normal /= np.sum(normal ** 2.0, axis=2, keepdims=True) ** 0.5
-    normal = normal * matting + np.stack([z, z, 1 - z], axis=2) * (1 - matting)
+        normal = np.stack([u, v, h], axis=2)
+        normal /= np.sum(normal ** 2.0, axis=2, keepdims=True) ** 0.5
+        normal = normal * matting + np.stack([z, z, 1 - z], axis=2) * (1 - matting)
 
-    results = [normal, left, right, bottom, top] + inner_results
-    results = [(x * 127.5 + 127.5).clip(0, 255).astype(np.uint8) for x in results]
-    return results
+        results = [normal, left, right, bottom, top] + inner_results
+        results = [(x * 127.5 + 127.5).clip(0, 255).astype(np.uint8) for x in results]
+        progress(1.0, desc="Done!")
+        return results
+    except gr.Error:
+        raise
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            clear_gpu_cache(device)
+            raise gr.Error("Out of GPU memory. Try reducing image size or number of samples.")
+        logger.exception("Runtime error during normal computation")
+        raise gr.Error(f"An error occurred: {e}")
+    except Exception as e:
+        logger.exception("Unexpected error during normal computation")
+        raise gr.Error(f"An error occurred: {e}")
 
 
 quick_prompts = [

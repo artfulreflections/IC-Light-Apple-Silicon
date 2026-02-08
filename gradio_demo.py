@@ -13,6 +13,7 @@ from utils import (
     get_default_scheduler, create_pipelines,
     encode_prompt_pair, pytorch2numpy, numpy2pytorch,
     resize_and_center_crop, resize_without_crop, run_rmbg,
+    clear_gpu_cache,
 )
 
 # CLI args and logging
@@ -51,7 +52,7 @@ t2i_pipe, i2i_pipe = create_pipelines(vae, text_encoder, tokenizer, unet, defaul
 
 
 @torch.inference_mode()
-def process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
+def process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, progress=None):
     if input_fg is None:
         raise gr.Error("Please upload an input image.")
     image_width = int(image_width) // 64 * 64
@@ -88,8 +89,12 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
     concat_conds = numpy2pytorch([fg]).to(device=vae.device, dtype=vae.dtype)
     concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
 
+    if progress:
+        progress(0.15, desc="Encoding prompts...")
     conds, unconds = encode_prompt_pair(prompt + ', ' + a_prompt, n_prompt, tokenizer, text_encoder, device)
 
+    if progress:
+        progress(0.25, desc="Generating (low-res)...")
     if input_bg is None:
         latents = t2i_pipe(
             prompt_embeds=conds,
@@ -130,6 +135,8 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
         target_height=int(round(image_height * highres_scale / 64.0) * 64))
     for p in pixels]
 
+    if progress:
+        progress(0.55, desc="Refining (high-res)...")
     pixels = numpy2pytorch(pixels).to(device=vae.device, dtype=vae.dtype)
     latents = vae.encode(pixels).latent_dist.mode() * vae.config.scaling_factor
     latents = latents.to(device=unet.device, dtype=unet.dtype)
@@ -155,16 +162,34 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
         cross_attention_kwargs={'concat_conds': concat_conds},
     ).images.to(vae.dtype) / vae.config.scaling_factor
 
+    if progress:
+        progress(0.9, desc="Decoding...")
     pixels = vae.decode(latents).sample
 
+    clear_gpu_cache(device)
     return pytorch2numpy(pixels)
 
 
 @torch.inference_mode()
-def process_relight(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
-    input_fg, matting = run_rmbg(input_fg, rmbg, device)
-    results = process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source)
-    return input_fg, results
+def process_relight(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, progress=gr.Progress()):
+    try:
+        progress(0, desc="Removing background...")
+        input_fg, matting = run_rmbg(input_fg, rmbg, device)
+        progress(0.1, desc="Processing...")
+        results = process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, progress=progress)
+        progress(1.0, desc="Done!")
+        return input_fg, results
+    except gr.Error:
+        raise
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            clear_gpu_cache(device)
+            raise gr.Error("Out of GPU memory. Try reducing image size or number of samples.")
+        logger.exception("Runtime error during relighting")
+        raise gr.Error(f"An error occurred: {e}")
+    except Exception as e:
+        logger.exception("Unexpected error during relighting")
+        raise gr.Error(f"An error occurred: {e}")
 
 
 quick_prompts = [

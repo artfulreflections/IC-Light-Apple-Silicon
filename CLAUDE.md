@@ -58,7 +58,8 @@ Both demos use a two-pass approach:
 
 ### Key Components
 
-- `utils.py`: Shared utility module containing device detection, model loading, schedulers, pipelines, image conversion, prompt encoding, and background removal functions. Both demos import from here.
+- `utils.py`: Shared utility module containing device detection, model loading, schedulers, pipelines, image conversion, prompt encoding, background removal, and GPU memory management. Both demos import from here.
+- `pyproject.toml`: Project metadata, dependencies, and tool configuration (ruff linter). Entry points: `python gradio_demo.py` (fc) and `python gradio_demo_bg.py` (fbc).
 - `briarmbg.py`: BRIA RMBG 1.4 background removal model (U2-Net architecture). Used to extract foreground alpha mattes via `run_rmbg()`. Non-commercial license — replace with BiRefNet for commercial use.
 - `db_examples.py`: Hardcoded example data (image paths, prompts, settings) for the Gradio UI example galleries.
 - `imgs/`: Example input images and pre-computed outputs. `imgs/bgs/` contains background images for the background-conditioned demo.
@@ -88,3 +89,15 @@ Key versions: `diffusers>=0.36.0`, `transformers>=5.1.0`, `gradio>=6.5.0`, `peft
 - Image data must be uint8 numpy arrays for proper display
 - `gr.Examples` has a bug generating malformed file URLs — use `gr.Gallery` + `select` handler instead
 - `block.launch()` requires `allowed_paths=[os.path.abspath('imgs/')]` to serve example images
+- `gr.Progress()` as last param in handler functions enables progress bars in UI
+
+### Error Handling
+
+- `process_relight` and `process_normal` are wrapped with try/except that catches OOM errors and surfaces user-friendly `gr.Error` messages
+- RuntimeError with "out of memory" triggers `clear_gpu_cache()` before raising `gr.Error`
+- All unexpected exceptions are logged with `logger.exception()` before being re-raised as `gr.Error`
+
+### GPU Memory Management
+
+- `clear_gpu_cache(device)` in `utils.py` calls `torch.cuda.empty_cache()` or `torch.mps.empty_cache()` based on device type
+- Called at the end of each `process()` function after generating results

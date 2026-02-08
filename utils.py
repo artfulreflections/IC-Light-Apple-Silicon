@@ -73,6 +73,14 @@ def move_models_to_device(device, text_encoder, vae, unet, rmbg):
     return text_encoder, vae, unet, rmbg
 
 
+def clear_gpu_cache(device):
+    """Clear GPU memory cache to free up unused memory."""
+    if device.type == 'cuda':
+        torch.cuda.empty_cache()
+    elif device.type == 'mps':
+        torch.mps.empty_cache()
+
+
 # --- UNet Setup ---
 
 def setup_unet(unet, in_channels):

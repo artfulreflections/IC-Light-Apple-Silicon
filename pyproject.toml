@@ -1,0 +1,87 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ic-light-apple-silicon"
+version = "0.2.0"
+description = "IC-Light: Illumination-Conditioned Image Generation with Stable Diffusion, optimized for Apple Silicon"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10,<3.13"
+authors = [
+    {name = "IC-Light Team"}
+]
+keywords = ["stable-diffusion", "image-generation", "relighting", "apple-silicon", "mps"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+
+dependencies = [
+    "diffusers>=0.36.0",
+    "transformers>=5.1.0",
+    "opencv-python",
+    "safetensors>=0.4.3",
+    "pillow>=10.2.0",
+    "einops",
+    "torch>=2.0.0",
+    "peft>=0.18.0",
+    "gradio>=6.5.0",
+    "protobuf==3.20",
+    "numpy>=1.26.0,<2.0",
+    "huggingface-hub>=1.3.0",
+    "markupsafe>=2.1.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+# Note: These scripts can be run directly with Python
+# ic-light-fc runs gradio_demo.py (text-conditioned, 8-channel fc model)
+# ic-light-fbc runs gradio_demo_bg.py (background-conditioned, 12-channel fbc model)
+# Usage: python gradio_demo.py or python gradio_demo_bg.py
+
+[project.urls]
+Homepage = "https://github.com/lllyasviel/IC-Light"
+Repository = "https://github.com/lllyasviel/IC-Light"
+Issues = "https://github.com/lllyasviel/IC-Light/issues"
+
+[tool.setuptools]
+packages = []
+# This is primarily a collection of scripts, not a traditional Python package
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "N",  # pep8-naming
+    "UP", # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "N803",  # argument name should be lowercase (common in ML code)
+    "N806",  # variable in function should be lowercase (common in ML code)
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
