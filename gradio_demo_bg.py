@@ -473,16 +473,21 @@ with block:
         with gr.Column():
             result_gallery = gr.Gallery(height=832, object_fit='contain', label='Outputs')
     with gr.Row():
-        dummy_image_for_outputs = gr.Image(visible=False, label='Result')
-        gr.Examples(
-            fn=lambda *args: [args[-1]],
-            examples=db_examples.background_conditioned_examples,
-            inputs=[
-                input_fg, input_bg, prompt, bg_source, image_width, image_height, seed, dummy_image_for_outputs
-            ],
-            outputs=[result_gallery],
-            run_on_click=True, examples_per_page=1024
+        example_gallery = gr.Gallery(
+            height=200, object_fit='contain', label='Example Inputs',
+            value=[ex[0] for ex in db_examples.background_conditioned_examples],
+            columns=5, allow_preview=False
         )
+
+    def example_selected(evt: gr.SelectData):
+        ex = db_examples.background_conditioned_examples[evt.index]
+        return ex[0], ex[1], ex[2], ex[3], ex[4], ex[5], ex[6]
+
+    example_gallery.select(
+        example_selected, inputs=None,
+        outputs=[input_fg, input_bg, prompt, bg_source, image_width, image_height, seed]
+    )
+
     ips = [input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source]
     relight_button.click(fn=process_relight, inputs=ips, outputs=[result_gallery])
     normal_button.click(fn=process_normal, inputs=ips, outputs=[result_gallery])
@@ -496,4 +501,4 @@ with block:
     bg_gallery.select(bg_gallery_selected, inputs=None, outputs=input_bg)
 
 
-block.launch(server_name='0.0.0.0')
+block.launch(server_name='0.0.0.0', allowed_paths=[os.path.abspath('imgs/')])

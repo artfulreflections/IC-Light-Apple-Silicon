@@ -6,7 +6,6 @@ foreground_conditioned_examples = [
         512,
         960,
         12345,
-        "imgs/o1.png",
     ],
     [
         "imgs/i1.webp",
@@ -15,7 +14,6 @@ foreground_conditioned_examples = [
         512,
         960,
         50,
-        "imgs/o2.png",
     ],
     [
         "imgs/i3.png",
@@ -24,7 +22,6 @@ foreground_conditioned_examples = [
         512,
         768,
         12345,
-        "imgs/o3.png",
     ],
     [
         "imgs/i3.png",
@@ -33,7 +30,6 @@ foreground_conditioned_examples = [
         512,
         768,
         12345,
-        "imgs/o4.png",
     ],
     [
         "imgs/i5.png",
@@ -42,7 +38,6 @@ foreground_conditioned_examples = [
         512,
         768,
         123,
-        "imgs/o5.png",
     ],
     [
         "imgs/i6.jpg",
@@ -51,7 +46,6 @@ foreground_conditioned_examples = [
         512,
         768,
         42,
-        "imgs/o6.png",
     ],
     [
         "imgs/i7.jpg",
@@ -60,7 +54,6 @@ foreground_conditioned_examples = [
         512,
         768,
         8888,
-        "imgs/o7.png",
     ],
     [
         "imgs/i8.webp",
@@ -69,7 +62,6 @@ foreground_conditioned_examples = [
         512,
         640,
         42,
-        "imgs/o8.png",
     ],
     [
         "imgs/i9.png",
@@ -78,7 +70,6 @@ foreground_conditioned_examples = [
         512,
         640,
         12345,
-        "imgs/o9.png",
     ],
     [
         "imgs/i10.png",
@@ -87,7 +78,6 @@ foreground_conditioned_examples = [
         512,
         960,
         8888,
-        "imgs/o10.png",
     ],
     [
         "imgs/i11.png",
@@ -96,7 +86,6 @@ foreground_conditioned_examples = [
         512,
         768,
         8888,
-        "imgs/o11.png",
     ],
     [
         "imgs/i11.png",
@@ -105,7 +94,6 @@ foreground_conditioned_examples = [
         512,
         768,
         12345,
-        "imgs/o12.png",
     ],
     [
         "imgs/i13.png",
@@ -114,7 +102,6 @@ foreground_conditioned_examples = [
         512,
         704,
         12345,
-        "imgs/o13.png",
     ],
     [
         "imgs/i14.png",
@@ -123,7 +110,6 @@ foreground_conditioned_examples = [
         512,
         704,
         100,
-        "imgs/o14.png",
     ],
     [
         "imgs/i15.png",
@@ -132,7 +118,6 @@ foreground_conditioned_examples = [
         512,
         768,
         12345,
-        "imgs/o15.png",
     ],
     [
         "imgs/i16.png",
@@ -141,7 +126,6 @@ foreground_conditioned_examples = [
         512,
         768,
         100,
-        "imgs/o16.png",
     ],
 ]
 
@@ -172,7 +156,6 @@ background_conditioned_examples = [
         512,
         768,
         12345,
-        "imgs/alter/o1.png",
     ],
     [
         "imgs/alter/i2.png",
@@ -182,7 +165,6 @@ background_conditioned_examples = [
         512,
         768,
         12345,
-        "imgs/alter/o2.png",
     ],
     [
         "imgs/alter/i1.jpeg",
@@ -192,7 +174,6 @@ background_conditioned_examples = [
         512,
         768,
         12345,
-        "imgs/alter/o3.png",
     ],
     [
         "imgs/alter/i1.jpeg",
@@ -202,7 +183,6 @@ background_conditioned_examples = [
         512,
         768,
         12345,
-        "imgs/alter/o4.png",
     ],
     [
         "imgs/alter/i6.webp",
@@ -212,6 +192,5 @@ background_conditioned_examples = [
         512,
         768,
         12345,
-        "imgs/alter/o5.png",
     ],
 ]

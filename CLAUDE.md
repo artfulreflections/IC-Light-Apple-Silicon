@@ -82,3 +82,5 @@ Key versions: `diffusers>=0.36.0`, `transformers>=5.1.0`, `gradio>=6.5.0`, `peft
 - Use `sources=['upload']` (not `source='upload'`) for `gr.Image`
 - Gallery selection uses `evt.index` to access original data lists
 - Image data must be uint8 numpy arrays for proper display
+- `gr.Examples` has a bug generating malformed file URLs — use `gr.Gallery` + `select` handler instead
+- `block.launch()` requires `allowed_paths=[os.path.abspath('imgs/')]` to serve example images

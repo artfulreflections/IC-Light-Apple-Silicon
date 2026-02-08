@@ -435,20 +435,25 @@ with block:
         with gr.Column():
             result_gallery = gr.Gallery(height=832, object_fit='contain', label='Outputs')
     with gr.Row():
-        dummy_image_for_outputs = gr.Image(visible=False, label='Result')
-        gr.Examples(
-            fn=lambda *args: ([args[-1]], None),
-            examples=db_examples.foreground_conditioned_examples,
-            inputs=[
-                input_fg, prompt, bg_source, image_width, image_height, seed, dummy_image_for_outputs
-            ],
-            outputs=[result_gallery, output_bg],
-            run_on_click=True, examples_per_page=1024
+        example_gallery = gr.Gallery(
+            height=200, object_fit='contain', label='Example Inputs',
+            value=[ex[0] for ex in db_examples.foreground_conditioned_examples],
+            columns=8, allow_preview=False
         )
+
+    def example_selected(evt: gr.SelectData):
+        ex = db_examples.foreground_conditioned_examples[evt.index]
+        return ex[0], ex[1], ex[2], ex[3], ex[4], ex[5]
+
+    example_gallery.select(
+        example_selected, inputs=None,
+        outputs=[input_fg, prompt, bg_source, image_width, image_height, seed]
+    )
+
     ips = [input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source]
     relight_button.click(fn=process_relight, inputs=ips, outputs=[output_bg, result_gallery])
     example_quick_prompts.click(lambda x, y: ', '.join(y.split(', ')[:2] + [x[0]]), inputs=[example_quick_prompts, prompt], outputs=prompt, show_progress=False, queue=False)
     example_quick_subjects.click(lambda x: x[0], inputs=example_quick_subjects, outputs=prompt, show_progress=False, queue=False)
 
 
-block.launch(server_name='0.0.0.0')
+block.launch(server_name='0.0.0.0', allowed_paths=[os.path.abspath('imgs/')])
