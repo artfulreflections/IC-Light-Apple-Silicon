@@ -1,71 +1,142 @@
-# IC-Light
+# IC-Light - Apple Silicon Fork
 
-IC-Light is a project to manipulate the illumination of images.
+IC-Light is a project to manipulate the illumination of images. This fork adds full support for Apple Silicon Macs (M1/M2/M3/M4) with Metal Performance Shaders (MPS) acceleration.
 
 The name "IC-Light" stands for **"Imposing Consistent Light"** (we will briefly describe this at the end of this page).
 
 Currently, we release two types of models: text-conditioned relighting model and background-conditioned model. Both types take foreground images as inputs.
 
+**Original Project:** This is a fork of [lllyasviel/IC-Light](https://github.com/lllyasviel/IC-Light) optimized for Apple Silicon hardware.
+
 **Note that "iclightai dot com" is a scam website. They have no relationship with us. Do not give scam websites money! This GitHub repo is the only official IC-Light.**
 
-# News
+# Features
 
-[Alternative model](https://github.com/lllyasviel/IC-Light/discussions/109) for stronger illumination modifications.
+This Apple Silicon fork provides:
 
-Some news about flux is [here](https://github.com/lllyasviel/IC-Light/discussions/98). (A fix [update](https://github.com/lllyasviel/IC-Light/discussions/98#discussioncomment-11370266) is added at Nov 25, more demos will be uploaded soon.)
+- **Apple Silicon (MPS) Support** - Automatic detection and optimization for M1/M2/M3/M4 chips with Metal Performance Shaders acceleration
+- **Gradio 6 Web UI** - Modern interface with improved gallery support and bug fixes
+- **Two Demo Modes**
+  - Text-conditioned relighting (gradio_demo.py) - 8-channel UNet with fc model
+  - Background-conditioned relighting (gradio_demo_bg.py) - 12-channel UNet with fbc model
+- **Two-Pass Generation** - Low-resolution preview followed by high-resolution refinement for better quality
+- **Scheduler Selection** - Dropdown to choose DDIM, Euler a, or DPM++ 2M SDE Karras (MPS defaults to DDIM for compatibility)
+- **Auto-save Outputs** - All generated images automatically saved to ./outputs/ directory
+- **Background Removal** - Integrated BRIA RMBG 1.4 for automatic foreground extraction
+- **CLI Arguments** - Flexible configuration via --host, --port, --model-dir, --model, --output-dir
+- **Unit Tests** - Comprehensive test suite (pytest tests/)
+- **Device Compatibility** - Works on MPS (Apple Silicon), CUDA (NVIDIA), and CPU
 
-# 🍎 Apple Silicon Support
+# Requirements
 
-This fork adds full support for Apple Silicon Macs (M1/M2/M3/M4) with Metal Performance Shaders (MPS) acceleration:
+- **Python 3.12 recommended** (Python 3.13+ breaks Gradio dependencies due to removed audioop module)
+- macOS 12.0+ (for Apple Silicon/MPS support)
+- 8GB+ RAM recommended
+- 10GB+ disk space for models
 
-- ✅ **MPS Device Support** - Automatic detection and optimization for Apple Silicon
-- ✅ **Gradio 6** - Modern UI with bug fixes and better performance
-- ✅ **Updated Dependencies** - All packages upgraded to latest compatible versions
-- ✅ **Fixed Schedulers** - DDIM scheduler for MPS compatibility (no indexing errors)
-- ✅ **Synthetic Backgrounds** - Ambient and directional lighting modes work without uploads
+# Installation
 
-### Performance
-Expect similar performance to CUDA on comparable hardware. The demo uses MPS acceleration automatically when running on Apple Silicon.
-
-# Get Started
-
-## Apple Silicon / macOS (Python 3.12 recommended)
+## Apple Silicon / macOS
 
     git clone https://github.com/artfulreflections/IC-Light-Apple-Silicon.git
     cd IC-Light-Apple-Silicon
     python3.12 -m venv .venv
     source .venv/bin/activate
+    pip install -e .
+
+This uses pyproject.toml for dependency management and installs the package in editable mode.
+
+Alternative using requirements.txt:
+
     pip install -r requirements.txt
-    python gradio_demo.py
 
 ## CUDA / Windows / Linux
 
-Below script will run the text-conditioned relighting model:
+For CUDA support on NVIDIA GPUs:
 
-    git clone https://github.com/lllyasviel/IC-Light.git
-    cd IC-Light
-    conda create -n iclight python=3.10
+    git clone https://github.com/artfulreflections/IC-Light-Apple-Silicon.git
+    cd IC-Light-Apple-Silicon
+    conda create -n iclight python=3.12
     conda activate iclight
     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-    pip install -r requirements.txt
+    pip install -e .
+
+# Usage
+
+## Text-Conditioned Relighting
+
+Run the text-conditioned demo (uses iclight_sd15_fc.safetensors):
+
     python gradio_demo.py
 
-### Background-Conditioned Demo
+With custom settings:
 
-To use the background-conditioned demo (relighting with background images or synthetic lighting):
+    python gradio_demo.py --host 0.0.0.0 --port 7860 --model-dir ./models --output-dir ./my_outputs
+
+CLI Arguments:
+- `--host` - Host address (default: 0.0.0.0)
+- `--port` - Port number (default: 7860)
+- `--model-dir` - Directory for model weights (default: ./models)
+- `--model` - HuggingFace model name for SD1.5 base (default: stablediffusionapi/realistic-vision-v51)
+- `--output-dir` - Directory for saved outputs (default: ./outputs)
+
+## Background-Conditioned Relighting
+
+Run the background-conditioned demo (uses iclight_sd15_fbc.safetensors):
 
     python gradio_demo_bg.py
 
-Model downloading is automatic. The demo will detect MPS on Apple Silicon and use appropriate optimizations.
+Same CLI arguments apply. This mode allows relighting with background images or synthetic lighting environments.
 
-### What's Different in This Fork
+## Running Tests
+
+    pytest tests/
+
+# Project Structure
+
+    IC-Light-Apple-Silicon/
+    ├── gradio_demo.py              # Text-conditioned demo (8-channel UNet, fc model)
+    ├── gradio_demo_bg.py           # Background-conditioned demo (12-channel UNet, fbc model)
+    ├── utils.py                    # Shared utilities (device detection, models, schedulers, image ops)
+    ├── db_examples.py              # Example data for galleries
+    ├── pyproject.toml              # Project metadata and dependencies
+    ├── requirements.txt            # Pip requirements file
+    ├── tests/                      # Unit tests
+    ├── models/                     # Downloaded model weights (auto-created)
+    └── outputs/                    # Generated images (auto-created)
+
+# Device Compatibility
+
+The application automatically detects your hardware:
+
+- **MPS (Apple Silicon)** - Automatically uses Metal Performance Shaders on M1/M2/M3/M4 Macs
+  - Uses DDIM scheduler by default (avoids off-by-one indexing bugs)
+  - Float16 precision for VAE
+- **CUDA (NVIDIA)** - Uses CUDA acceleration on compatible NVIDIA GPUs
+  - All schedulers supported
+  - Bfloat16 precision for VAE when available
+- **CPU** - Fallback for systems without GPU acceleration
+  - Slower performance but fully functional
+
+# What's Different in This Fork
+
+Compared to the original lllyasviel/IC-Light:
 
 - **Gradio 3.41.2 → 6.5.1** - Modern UI, JavaScript bug fixes, better gallery support
 - **diffusers 0.27.2 → 0.36.0** - Latest features and compatibility
 - **transformers 4.36.2 → 5.1.0** - Improved model support
+- **peft 0.6.0 → 0.17.0** - Updated parameter-efficient fine-tuning
 - **MPS-optimized schedulers** - DDIM scheduler prevents indexing errors on Apple Silicon
 - **Fixed synthetic backgrounds** - Ambient, Left, Right, Top, Bottom lighting modes work correctly
-- **Python 3.12 support** - No audioop compatibility issues
+- **Python 3.12 support** - Avoids audioop compatibility issues in Python 3.13+
+- **Auto-save functionality** - All outputs automatically saved with timestamps
+- **Enhanced error handling** - Better user-facing error messages
+
+# Credits
+
+This fork is maintained by [artfulreflections](https://github.com/artfulreflections).
+
+Original IC-Light project by [Lvmin Zhang (lllyasviel)](https://github.com/lllyasviel).
 
 Note that the original "gradio_demo.py" has an official [huggingFace Space here](https://huggingface.co/spaces/lllyasviel/IC-Light).
 

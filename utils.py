@@ -3,6 +3,7 @@ import logging
 import os
 import math
 from datetime import datetime
+from typing import Optional, Any, Union
 import numpy as np
 import torch
 import safetensors.torch as sf
@@ -27,7 +28,7 @@ from torch.hub import download_url_to_file
 
 # --- CLI Arguments ---
 
-def parse_common_args(description='IC-Light Demo'):
+def parse_common_args(description: str = 'IC-Light Demo') -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Server host (default: 0.0.0.0)')
     parser.add_argument('--port', type=int, default=7860, help='Server port (default: 7860)')
@@ -39,7 +40,7 @@ def parse_common_args(description='IC-Light Demo'):
 
 # --- Logging ---
 
-def setup_logging():
+def setup_logging() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -48,7 +49,7 @@ def setup_logging():
 
 # --- Device Detection ---
 
-def get_device():
+def get_device() -> torch.device:
     if torch.backends.mps.is_available():
         device = torch.device('mps')
         logger.info("Using MPS (Metal Performance Shaders) for Apple Silicon")
@@ -61,7 +62,7 @@ def get_device():
     return device
 
 
-def move_models_to_device(device, text_encoder, vae, unet, rmbg):
+def move_models_to_device(device: torch.device, text_encoder: CLIPTextModel, vae: AutoencoderKL, unet: UNet2DConditionModel, rmbg: BriaRMBG) -> tuple[CLIPTextModel, AutoencoderKL, UNet2DConditionModel, BriaRMBG]:
     # MPS doesn't support bfloat16 as well as CUDA, so use float16 for all on MPS
     if device.type == 'mps':
         text_encoder = text_encoder.to(device=device, dtype=torch.float16)
@@ -76,7 +77,7 @@ def move_models_to_device(device, text_encoder, vae, unet, rmbg):
     return text_encoder, vae, unet, rmbg
 
 
-def clear_gpu_cache(device):
+def clear_gpu_cache(device: torch.device) -> None:
     """Clear GPU memory cache to free up unused memory."""
     if device.type == 'cuda':
         torch.cuda.empty_cache()
@@ -84,7 +85,7 @@ def clear_gpu_cache(device):
         torch.mps.empty_cache()
 
 
-def save_outputs(images, output_dir, prefix='relight'):
+def save_outputs(images: list[np.ndarray], output_dir: str, prefix: str = 'relight') -> list[str]:
     """Save output images to the output directory."""
     os.makedirs(output_dir, exist_ok=True)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -100,7 +101,7 @@ def save_outputs(images, output_dir, prefix='relight'):
 
 # --- UNet Setup ---
 
-def setup_unet(unet, in_channels):
+def setup_unet(unet: UNet2DConditionModel, in_channels: int) -> UNet2DConditionModel:
     """Modify UNet conv_in for extra channels and hook forward pass."""
     with torch.no_grad():
         new_conv_in = torch.nn.Conv2d(
@@ -127,7 +128,7 @@ def setup_unet(unet, in_channels):
 
 # --- Model Loading ---
 
-def load_models(sd15_name='stablediffusionapi/realistic-vision-v51'):
+def load_models(sd15_name: str = 'stablediffusionapi/realistic-vision-v51') -> tuple[CLIPTokenizer, CLIPTextModel, AutoencoderKL, UNet2DConditionModel, BriaRMBG]:
     logger.info("Loading models from %s...", sd15_name)
     tokenizer = CLIPTokenizer.from_pretrained(sd15_name, subfolder="tokenizer")
     text_encoder = CLIPTextModel.from_pretrained(sd15_name, subfolder="text_encoder")
@@ -138,7 +139,7 @@ def load_models(sd15_name='stablediffusionapi/realistic-vision-v51'):
     return tokenizer, text_encoder, vae, unet, rmbg
 
 
-def load_and_merge_weights(unet, model_path, model_url):
+def load_and_merge_weights(unet: UNet2DConditionModel, model_path: str, model_url: str) -> None:
     os.makedirs(os.path.dirname(model_path) or '.', exist_ok=True)
     if not os.path.exists(model_path):
         logger.info("Downloading model weights to %s...", model_path)
@@ -153,7 +154,7 @@ def load_and_merge_weights(unet, model_path, model_url):
 
 # --- Schedulers ---
 
-def create_schedulers():
+def create_schedulers() -> tuple[DDIMScheduler, EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler]:
     ddim = DDIMScheduler(
         num_train_timesteps=1000,
         beta_start=0.00085,
@@ -183,14 +184,14 @@ def create_schedulers():
     return ddim, euler_a, dpmpp_2m_sde_karras
 
 
-def get_default_scheduler(device, ddim, dpmpp_2m_sde_karras):
+def get_default_scheduler(device: torch.device, ddim: DDIMScheduler, dpmpp_2m_sde_karras: DPMSolverMultistepScheduler) -> Union[DDIMScheduler, DPMSolverMultistepScheduler]:
     # Use DDIM scheduler for MPS compatibility (DPMSolver has indexing issues on MPS)
     return ddim if device.type == 'mps' else dpmpp_2m_sde_karras
 
 
 # --- Pipelines ---
 
-def create_pipelines(vae, text_encoder, tokenizer, unet, scheduler):
+def create_pipelines(vae: AutoencoderKL, text_encoder: CLIPTextModel, tokenizer: CLIPTokenizer, unet: UNet2DConditionModel, scheduler: Union[DDIMScheduler, DPMSolverMultistepScheduler]) -> tuple[StableDiffusionPipeline, StableDiffusionImg2ImgPipeline]:
     t2i_pipe = StableDiffusionPipeline(
         vae=vae,
         text_encoder=text_encoder,
@@ -218,7 +219,7 @@ def create_pipelines(vae, text_encoder, tokenizer, unet, scheduler):
     return t2i_pipe, i2i_pipe
 
 
-def enable_sdp(unet, vae):
+def enable_sdp(unet: UNet2DConditionModel, vae: AutoencoderKL) -> None:
     unet.set_attn_processor(AttnProcessor2_0())
     vae.set_attn_processor(AttnProcessor2_0())
 
@@ -226,14 +227,14 @@ def enable_sdp(unet, vae):
 # --- Prompt Encoding ---
 
 @torch.inference_mode()
-def encode_prompt_inner(txt, tokenizer, text_encoder, device):
+def encode_prompt_inner(txt: str, tokenizer: CLIPTokenizer, text_encoder: CLIPTextModel, device: torch.device) -> torch.Tensor:
     max_length = tokenizer.model_max_length
     chunk_length = tokenizer.model_max_length - 2
     id_start = tokenizer.bos_token_id
     id_end = tokenizer.eos_token_id
     id_pad = id_end
 
-    def pad(x, p, i):
+    def pad(x: list[int], p: int, i: int) -> list[int]:
         return x[:i] if len(x) >= i else x + [p] * (i - len(x))
 
     tokens = tokenizer(txt, truncation=False, add_special_tokens=False)["input_ids"]
@@ -247,7 +248,7 @@ def encode_prompt_inner(txt, tokenizer, text_encoder, device):
 
 
 @torch.inference_mode()
-def encode_prompt_pair(positive_prompt, negative_prompt, tokenizer, text_encoder, device):
+def encode_prompt_pair(positive_prompt: str, negative_prompt: str, tokenizer: CLIPTokenizer, text_encoder: CLIPTextModel, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
     c = encode_prompt_inner(positive_prompt, tokenizer, text_encoder, device)
     uc = encode_prompt_inner(negative_prompt, tokenizer, text_encoder, device)
 
@@ -270,7 +271,7 @@ def encode_prompt_pair(positive_prompt, negative_prompt, tokenizer, text_encoder
 # --- Image Conversion ---
 
 @torch.inference_mode()
-def pytorch2numpy(imgs, quant=True):
+def pytorch2numpy(imgs: torch.Tensor, quant: bool = True) -> list[np.ndarray]:
     results = []
     for x in imgs:
         y = x.movedim(0, -1)
@@ -287,7 +288,7 @@ def pytorch2numpy(imgs, quant=True):
 
 
 @torch.inference_mode()
-def numpy2pytorch(imgs):
+def numpy2pytorch(imgs: list[np.ndarray]) -> torch.Tensor:
     h = torch.from_numpy(np.stack(imgs, axis=0)).float() / 127.0 - 1.0  # so that 127 must be strictly 0.0
     h = h.movedim(-1, 1)
     return h
@@ -295,7 +296,7 @@ def numpy2pytorch(imgs):
 
 # --- Image Resizing ---
 
-def resize_and_center_crop(image, target_width, target_height):
+def resize_and_center_crop(image: np.ndarray, target_width: int, target_height: int) -> np.ndarray:
     pil_image = Image.fromarray(image)
     original_width, original_height = pil_image.size
     scale_factor = max(target_width / original_width, target_height / original_height)
@@ -310,7 +311,7 @@ def resize_and_center_crop(image, target_width, target_height):
     return np.array(cropped_image)
 
 
-def resize_without_crop(image, target_width, target_height):
+def resize_without_crop(image: np.ndarray, target_width: int, target_height: int) -> np.ndarray:
     pil_image = Image.fromarray(image)
     resized_image = pil_image.resize((target_width, target_height), Image.LANCZOS)
     return np.array(resized_image)
@@ -319,7 +320,7 @@ def resize_without_crop(image, target_width, target_height):
 # --- Background Removal ---
 
 @torch.inference_mode()
-def run_rmbg(img, rmbg_model, device, sigma=0.0):
+def run_rmbg(img: np.ndarray, rmbg_model: BriaRMBG, device: torch.device, sigma: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
     H, W, C = img.shape
     assert C == 3
     k = (256.0 / float(H * W)) ** 0.5
