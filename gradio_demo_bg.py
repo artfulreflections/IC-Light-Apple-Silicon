@@ -50,6 +50,7 @@ unet.forward = hooked_unet_forward
 # Load
 
 model_path = './models/iclight_sd15_fbc.safetensors'
+os.makedirs('./models', exist_ok=True)
 
 if not os.path.exists(model_path):
     download_url_to_file(url='https://huggingface.co/lllyasviel/ic-light/resolve/main/iclight_sd15_fbc.safetensors', dst=model_path)
@@ -359,9 +360,6 @@ def process_relight(input_fg, input_bg, prompt, image_width, image_height, num_s
     # Ensure extra_images (fg, bg) are also in uint8 format for Gradio
     extra_images = [img if img.dtype == np.uint8 else (img * 255.0).clip(0, 255).astype(np.uint8) if img.max() <= 1.0 else img.clip(0, 255).astype(np.uint8) for img in extra_images]
     final_output = results + extra_images
-    print(f"DEBUG: Returning {len(final_output)} images: {len(results)} results + {len(extra_images)} extra")
-    print(f"DEBUG: Image shapes: {[img.shape for img in final_output]}")
-    print(f"DEBUG: Image dtypes: {[img.dtype for img in final_output]}")
     return final_output
 
 

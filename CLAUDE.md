@@ -12,16 +12,15 @@ IC-Light ("Imposing Consistent Light") is a research project for manipulating im
 ## Running
 
 ```bash
-# Setup
+# Apple Silicon / macOS (Python 3.12 recommended)
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# CUDA / Windows / Linux
 conda create -n iclight python=3.10
 conda activate iclight
-
-# For CUDA (NVIDIA GPU):
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-
-# For Apple Silicon (MPS):
-pip install torch torchvision
-
 pip install -r requirements.txt
 
 # Text-conditioned relighting
@@ -31,9 +30,11 @@ python gradio_demo.py
 python gradio_demo_bg.py
 ```
 
-Models download automatically to `./models/` on first run. The Gradio UI launches on `0.0.0.0`.
+Models download automatically to `./models/` on first run. The Gradio UI launches on `0.0.0.0:7860`.
 
 **Device Support**: Code automatically detects and uses MPS (Apple Silicon), CUDA (NVIDIA GPU), or CPU. On MPS, VAE uses float16 instead of bfloat16 for compatibility.
+
+**Scheduler Note**: MPS uses DDIM scheduler (DPMSolverMultistepScheduler has off-by-one indexing errors on MPS). CUDA uses DPM++ 2M SDE Karras.
 
 ## Architecture
 
@@ -72,4 +73,12 @@ Both demos use a two-pass approach:
 
 ## Dependencies
 
-Pinned versions that matter: `diffusers==0.27.2`, `transformers==4.36.2`, `gradio==3.41.2`, `protobuf==3.20`. Base model is `stablediffusionapi/realistic-vision-v51` (SD1.5 fine-tune).
+Key versions: `diffusers>=0.36.0`, `transformers>=5.1.0`, `gradio>=6.5.0`, `peft>=0.18.0`, `protobuf==3.20`, `numpy<2.0`. Base model is `stablediffusionapi/realistic-vision-v51` (SD1.5 fine-tune).
+
+**Python version**: 3.12 recommended. Python 3.13+ removed the `audioop` module which breaks some Gradio dependencies.
+
+### Gradio 6 API Notes
+
+- Use `sources=['upload']` (not `source='upload'`) for `gr.Image`
+- Gallery selection uses `evt.index` to access original data lists
+- Image data must be uint8 numpy arrays for proper display

@@ -50,6 +50,7 @@ unet.forward = hooked_unet_forward
 # Load
 
 model_path = './models/iclight_sd15_fc.safetensors'
+os.makedirs('./models', exist_ok=True)
 
 if not os.path.exists(model_path):
     download_url_to_file(url='https://huggingface.co/lllyasviel/ic-light/resolve/main/iclight_sd15_fc.safetensors', dst=model_path)
@@ -121,12 +122,15 @@ dpmpp_2m_sde_karras_scheduler = DPMSolverMultistepScheduler(
 
 # Pipelines
 
+# Use DDIM scheduler for MPS compatibility (DPMSolver has indexing issues on MPS)
+default_scheduler = ddim_scheduler if device.type == 'mps' else dpmpp_2m_sde_karras_scheduler
+
 t2i_pipe = StableDiffusionPipeline(
     vae=vae,
     text_encoder=text_encoder,
     tokenizer=tokenizer,
     unet=unet,
-    scheduler=dpmpp_2m_sde_karras_scheduler,
+    scheduler=default_scheduler,
     safety_checker=None,
     requires_safety_checker=False,
     feature_extractor=None,
@@ -138,7 +142,7 @@ i2i_pipe = StableDiffusionImg2ImgPipeline(
     text_encoder=text_encoder,
     tokenizer=tokenizer,
     unet=unet,
-    scheduler=dpmpp_2m_sde_karras_scheduler,
+    scheduler=default_scheduler,
     safety_checker=None,
     requires_safety_checker=False,
     feature_extractor=None,
@@ -272,7 +276,7 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
         image = np.tile(gradient, (1, image_width))
         input_bg = np.stack((image,) * 3, axis=-1).astype(np.uint8)
     else:
-        raise 'Wrong initial latent!'
+        raise ValueError('Wrong initial latent!')
 
     rng = torch.Generator(device=device).manual_seed(int(seed))
 
@@ -401,7 +405,7 @@ with block:
     with gr.Row():
         with gr.Column():
             with gr.Row():
-                input_fg = gr.Image(source='upload', type="numpy", label="Image", height=480)
+                input_fg = gr.Image(sources=['upload'], type="numpy", label="Image", height=480)
                 output_bg = gr.Image(type="numpy", label="Preprocessed Foreground", height=480)
             prompt = gr.Textbox(label="Prompt")
             bg_source = gr.Radio(choices=[e.value for e in BGSource],
