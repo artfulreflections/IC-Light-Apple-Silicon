@@ -63,11 +63,28 @@ del sd_offset, sd_origin, sd_merged, keys
 
 # Device
 
-device = torch.device('cuda')
-text_encoder = text_encoder.to(device=device, dtype=torch.float16)
-vae = vae.to(device=device, dtype=torch.bfloat16)
-unet = unet.to(device=device, dtype=torch.float16)
-rmbg = rmbg.to(device=device, dtype=torch.float32)
+# Use MPS for Apple Silicon, CUDA if available, otherwise CPU
+if torch.backends.mps.is_available():
+    device = torch.device('mps')
+    print("Using MPS (Metal Performance Shaders) for Apple Silicon")
+elif torch.cuda.is_available():
+    device = torch.device('cuda')
+    print("Using CUDA")
+else:
+    device = torch.device('cpu')
+    print("Using CPU")
+
+# MPS doesn't support bfloat16 as well as CUDA, so use float16 for all on MPS
+if device.type == 'mps':
+    text_encoder = text_encoder.to(device=device, dtype=torch.float16)
+    vae = vae.to(device=device, dtype=torch.float16)  # Changed from bfloat16 for MPS compatibility
+    unet = unet.to(device=device, dtype=torch.float16)
+    rmbg = rmbg.to(device=device, dtype=torch.float32)
+else:
+    text_encoder = text_encoder.to(device=device, dtype=torch.float16)
+    vae = vae.to(device=device, dtype=torch.bfloat16)
+    unet = unet.to(device=device, dtype=torch.float16)
+    rmbg = rmbg.to(device=device, dtype=torch.float32)
 
 # SDP
 

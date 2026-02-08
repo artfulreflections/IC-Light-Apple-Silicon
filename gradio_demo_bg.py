@@ -63,11 +63,28 @@ del sd_offset, sd_origin, sd_merged, keys
 
 # Device
 
-device = torch.device('cuda')
-text_encoder = text_encoder.to(device=device, dtype=torch.float16)
-vae = vae.to(device=device, dtype=torch.bfloat16)
-unet = unet.to(device=device, dtype=torch.float16)
-rmbg = rmbg.to(device=device, dtype=torch.float32)
+# Use MPS for Apple Silicon, CUDA if available, otherwise CPU
+if torch.backends.mps.is_available():
+    device = torch.device('mps')
+    print("Using MPS (Metal Performance Shaders) for Apple Silicon")
+elif torch.cuda.is_available():
+    device = torch.device('cuda')
+    print("Using CUDA")
+else:
+    device = torch.device('cpu')
+    print("Using CPU")
+
+# MPS doesn't support bfloat16 as well as CUDA, so use float16 for all on MPS
+if device.type == 'mps':
+    text_encoder = text_encoder.to(device=device, dtype=torch.float16)
+    vae = vae.to(device=device, dtype=torch.float16)  # Changed from bfloat16 for MPS compatibility
+    unet = unet.to(device=device, dtype=torch.float16)
+    rmbg = rmbg.to(device=device, dtype=torch.float32)
+else:
+    text_encoder = text_encoder.to(device=device, dtype=torch.float16)
+    vae = vae.to(device=device, dtype=torch.bfloat16)
+    unet = unet.to(device=device, dtype=torch.float16)
+    rmbg = rmbg.to(device=device, dtype=torch.float32)
 
 # SDP
 
@@ -104,12 +121,15 @@ dpmpp_2m_sde_karras_scheduler = DPMSolverMultistepScheduler(
 
 # Pipelines
 
+# Use DDIM scheduler for MPS compatibility (DPMSolver has indexing issues on MPS)
+default_scheduler = ddim_scheduler if device.type == 'mps' else dpmpp_2m_sde_karras_scheduler
+
 t2i_pipe = StableDiffusionPipeline(
     vae=vae,
     text_encoder=text_encoder,
     tokenizer=tokenizer,
     unet=unet,
-    scheduler=dpmpp_2m_sde_karras_scheduler,
+    scheduler=default_scheduler,
     safety_checker=None,
     requires_safety_checker=False,
     feature_extractor=None,
@@ -121,7 +141,7 @@ i2i_pipe = StableDiffusionImg2ImgPipeline(
     text_encoder=text_encoder,
     tokenizer=tokenizer,
     unet=unet,
-    scheduler=dpmpp_2m_sde_karras_scheduler,
+    scheduler=default_scheduler,
     safety_checker=None,
     requires_safety_checker=False,
     feature_extractor=None,
@@ -235,9 +255,13 @@ def run_rmbg(img, sigma=0.0):
 def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source):
     bg_source = BGSource(bg_source)
 
+    # Handle background source - synthetic backgrounds don't need input_bg
     if bg_source == BGSource.UPLOAD:
-        pass
+        if input_bg is None:
+            raise ValueError("Please upload a background image when using 'Use Background Image' mode")
     elif bg_source == BGSource.UPLOAD_FLIP:
+        if input_bg is None:
+            raise ValueError("Please upload a background image when using 'Use Flipped Background Image' mode")
         input_bg = np.fliplr(input_bg)
     elif bg_source == BGSource.GREY:
         input_bg = np.zeros(shape=(image_height, image_width, 3), dtype=np.uint8) + 64
@@ -258,12 +282,16 @@ def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, 
         image = np.tile(gradient, (1, image_width))
         input_bg = np.stack((image,) * 3, axis=-1).astype(np.uint8)
     else:
-        raise 'Wrong background source!'
+        raise ValueError('Wrong background source!')
 
     rng = torch.Generator(device=device).manual_seed(seed)
 
     fg = resize_and_center_crop(input_fg, image_width, image_height)
-    bg = resize_and_center_crop(input_bg, image_width, image_height)
+    # For synthetic backgrounds, they're already the right size, so just use them directly
+    if bg_source in [BGSource.GREY, BGSource.LEFT, BGSource.RIGHT, BGSource.TOP, BGSource.BOTTOM]:
+        bg = input_bg
+    else:
+        bg = resize_and_center_crop(input_bg, image_width, image_height)
     concat_conds = numpy2pytorch([fg, bg]).to(device=vae.device, dtype=vae.dtype)
     concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
     concat_conds = torch.cat([c[None, ...] for c in concat_conds], dim=1)
@@ -328,7 +356,13 @@ def process_relight(input_fg, input_bg, prompt, image_width, image_height, num_s
     input_fg, matting = run_rmbg(input_fg)
     results, extra_images = process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source)
     results = [(x * 255.0).clip(0, 255).astype(np.uint8) for x in results]
-    return results + extra_images
+    # Ensure extra_images (fg, bg) are also in uint8 format for Gradio
+    extra_images = [img if img.dtype == np.uint8 else (img * 255.0).clip(0, 255).astype(np.uint8) if img.max() <= 1.0 else img.clip(0, 255).astype(np.uint8) for img in extra_images]
+    final_output = results + extra_images
+    print(f"DEBUG: Returning {len(final_output)} images: {len(results)} results + {len(extra_images)} extra")
+    print(f"DEBUG: Image shapes: {[img.shape for img in final_output]}")
+    print(f"DEBUG: Image dtypes: {[img.dtype for img in final_output]}")
+    return final_output
 
 
 @torch.inference_mode()
@@ -410,8 +444,8 @@ with block:
     with gr.Row():
         with gr.Column():
             with gr.Row():
-                input_fg = gr.Image(source='upload', type="numpy", label="Foreground", height=480)
-                input_bg = gr.Image(source='upload', type="numpy", label="Background", height=480)
+                input_fg = gr.Image(sources=['upload'], type="numpy", label="Foreground", height=480)
+                input_bg = gr.Image(sources=['upload'], type="numpy", label="Background", height=480)
             prompt = gr.Textbox(label="Prompt")
             bg_source = gr.Radio(choices=[e.value for e in BGSource],
                                  value=BGSource.UPLOAD.value,
@@ -456,10 +490,12 @@ with block:
     normal_button.click(fn=process_normal, inputs=ips, outputs=[result_gallery])
     example_prompts.click(lambda x: x[0], inputs=example_prompts, outputs=prompt, show_progress=False, queue=False)
 
-    def bg_gallery_selected(gal, evt: gr.SelectData):
-        return gal[evt.index]['name']
+    def bg_gallery_selected(evt: gr.SelectData):
+        # Use the index to get the image path directly from the original list
+        # This avoids Gradio 6's complex gallery data structures
+        return db_examples.bg_samples[evt.index]
 
-    bg_gallery.select(bg_gallery_selected, inputs=bg_gallery, outputs=input_bg)
+    bg_gallery.select(bg_gallery_selected, inputs=None, outputs=input_bg)
 
 
 block.launch(server_name='0.0.0.0')
