@@ -14,7 +14,31 @@ Currently, we release two types of models: text-conditioned relighting model and
 
 Some news about flux is [here](https://github.com/lllyasviel/IC-Light/discussions/98). (A fix [update](https://github.com/lllyasviel/IC-Light/discussions/98#discussioncomment-11370266) is added at Nov 25, more demos will be uploaded soon.)
 
+# 🍎 Apple Silicon Support
+
+This fork adds full support for Apple Silicon Macs (M1/M2/M3/M4) with Metal Performance Shaders (MPS) acceleration:
+
+- ✅ **MPS Device Support** - Automatic detection and optimization for Apple Silicon
+- ✅ **Gradio 6** - Modern UI with bug fixes and better performance
+- ✅ **Updated Dependencies** - All packages upgraded to latest compatible versions
+- ✅ **Fixed Schedulers** - DDIM scheduler for MPS compatibility (no indexing errors)
+- ✅ **Synthetic Backgrounds** - Ambient and directional lighting modes work without uploads
+
+### Performance
+Expect similar performance to CUDA on comparable hardware. The demo uses MPS acceleration automatically when running on Apple Silicon.
+
 # Get Started
+
+## Apple Silicon / macOS (Python 3.12 recommended)
+
+    git clone https://github.com/artfulreflections/IC-Light-Apple-Silicon.git
+    cd IC-Light-Apple-Silicon
+    python3.12 -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
+    python gradio_demo.py
+
+## CUDA / Windows / Linux
 
 Below script will run the text-conditioned relighting model:
 
@@ -26,13 +50,24 @@ Below script will run the text-conditioned relighting model:
     pip install -r requirements.txt
     python gradio_demo.py
 
-Or, to use background-conditioned demo:
+### Background-Conditioned Demo
+
+To use the background-conditioned demo (relighting with background images or synthetic lighting):
 
     python gradio_demo_bg.py
 
-Model downloading is automatic.
+Model downloading is automatic. The demo will detect MPS on Apple Silicon and use appropriate optimizations.
 
-Note that the "gradio_demo.py" has an official [huggingFace Space here](https://huggingface.co/spaces/lllyasviel/IC-Light).
+### What's Different in This Fork
+
+- **Gradio 3.41.2 → 6.5.1** - Modern UI, JavaScript bug fixes, better gallery support
+- **diffusers 0.27.2 → 0.36.0** - Latest features and compatibility
+- **transformers 4.36.2 → 5.1.0** - Improved model support
+- **MPS-optimized schedulers** - DDIM scheduler prevents indexing errors on Apple Silicon
+- **Fixed synthetic backgrounds** - Ambient, Left, Right, Top, Bottom lighting modes work correctly
+- **Python 3.12 support** - No audioop compatibility issues
+
+Note that the original "gradio_demo.py" has an official [huggingFace Space here](https://huggingface.co/spaces/lllyasviel/IC-Light).
 
 # Screenshot
 
