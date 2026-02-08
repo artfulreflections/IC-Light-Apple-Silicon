@@ -13,7 +13,7 @@ from utils import (
     get_default_scheduler, create_pipelines,
     encode_prompt_pair, pytorch2numpy, numpy2pytorch,
     resize_and_center_crop, resize_without_crop, run_rmbg,
-    clear_gpu_cache,
+    clear_gpu_cache, save_outputs,
 )
 
 # CLI args and logging
@@ -22,7 +22,7 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 # Load models
-sd15_name = 'stablediffusionapi/realistic-vision-v51'
+sd15_name = args.model
 tokenizer, text_encoder, vae, unet, rmbg = load_models(sd15_name)
 
 # Change UNet (8-channel for foreground-conditioned model)
@@ -50,13 +50,25 @@ default_scheduler = get_default_scheduler(device, ddim_scheduler, dpmpp_2m_sde_k
 # Pipelines
 t2i_pipe, i2i_pipe = create_pipelines(vae, text_encoder, tokenizer, unet, default_scheduler)
 
+# Scheduler selection
+scheduler_map = {
+    'DDIM': ddim_scheduler,
+    'Euler a': euler_a_scheduler,
+    'DPM++ 2M SDE Karras': dpmpp_2m_sde_karras_scheduler,
+}
+default_scheduler_name = 'DDIM' if device.type == 'mps' else 'DPM++ 2M SDE Karras'
+
 
 @torch.inference_mode()
-def process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, progress=None):
+def process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, scheduler_name=None, progress=None):
     if input_fg is None:
         raise gr.Error("Please upload an input image.")
     image_width = int(image_width) // 64 * 64
     image_height = int(image_height) // 64 * 64
+
+    scheduler = scheduler_map.get(scheduler_name, default_scheduler)
+    t2i_pipe.scheduler = scheduler
+    i2i_pipe.scheduler = scheduler
 
     bg_source = BGSource(bg_source)
     input_bg = None
@@ -171,12 +183,13 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
 
 
 @torch.inference_mode()
-def process_relight(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, progress=gr.Progress()):
+def process_relight(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, scheduler_name, progress=gr.Progress()):
     try:
         progress(0, desc="Removing background...")
         input_fg, matting = run_rmbg(input_fg, rmbg, device)
         progress(0.1, desc="Processing...")
-        results = process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, progress=progress)
+        results = process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, scheduler_name=scheduler_name, progress=progress)
+        save_outputs(results, args.output_dir, prefix='fc_relight')
         progress(1.0, desc="Done!")
         return input_fg, results
     except gr.Error:
@@ -253,6 +266,9 @@ with block:
                     image_height = gr.Slider(label="Image Height", minimum=256, maximum=1024, value=640, step=64)
 
             with gr.Accordion("Advanced options", open=False):
+                scheduler_dropdown = gr.Dropdown(
+                    choices=list(scheduler_map.keys()), value=default_scheduler_name,
+                    label="Scheduler")
                 steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=25, step=1)
                 cfg = gr.Slider(label="CFG Scale", minimum=1.0, maximum=32.0, value=2, step=0.01)
                 lowres_denoise = gr.Slider(label="Lowres Denoise (for initial latent)", minimum=0.1, maximum=1.0, value=0.9, step=0.01)
@@ -278,7 +294,7 @@ with block:
         outputs=[input_fg, prompt, bg_source, image_width, image_height, seed]
     )
 
-    ips = [input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source]
+    ips = [input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, scheduler_dropdown]
     relight_button.click(fn=process_relight, inputs=ips, outputs=[output_bg, result_gallery])
     example_quick_prompts.click(lambda x, y: ', '.join(y.split(', ')[:2] + [x[0]]), inputs=[example_quick_prompts, prompt], outputs=prompt, show_progress=False, queue=False)
     example_quick_subjects.click(lambda x: x[0], inputs=example_quick_subjects, outputs=prompt, show_progress=False, queue=False)

@@ -30,14 +30,14 @@ python gradio_demo.py
 python gradio_demo_bg.py
 
 # CLI options (both demos)
-python gradio_demo.py --host 0.0.0.0 --port 7860 --model-dir ./models
+python gradio_demo.py --host 0.0.0.0 --port 7860 --model-dir ./models --model stablediffusionapi/realistic-vision-v51 --output-dir ./outputs
 ```
 
-Models download automatically to `./models/` (or `--model-dir`) on first run. The Gradio UI launches on `0.0.0.0:7860` by default (configurable via `--host`/`--port`).
+Models download automatically to `./models/` (or `--model-dir`) on first run. The Gradio UI launches on `0.0.0.0:7860` by default (configurable via `--host`/`--port`). Generated images are auto-saved to `./outputs/` (or `--output-dir`).
 
 **Device Support**: Code automatically detects and uses MPS (Apple Silicon), CUDA (NVIDIA GPU), or CPU. On MPS, VAE uses float16 instead of bfloat16 for compatibility.
 
-**Scheduler Note**: MPS uses DDIM scheduler (DPMSolverMultistepScheduler has off-by-one indexing errors on MPS). CUDA uses DPM++ 2M SDE Karras.
+**Scheduler Note**: MPS defaults to DDIM scheduler (DPMSolverMultistepScheduler has off-by-one indexing errors on MPS). CUDA defaults to DPM++ 2M SDE Karras. Users can switch schedulers via the dropdown in Advanced options (DDIM, Euler a, DPM++ 2M SDE Karras).
 
 ## Architecture
 
@@ -101,3 +101,10 @@ Key versions: `diffusers>=0.36.0`, `transformers>=5.1.0`, `gradio>=6.5.0`, `peft
 
 - `clear_gpu_cache(device)` in `utils.py` calls `torch.cuda.empty_cache()` or `torch.mps.empty_cache()` based on device type
 - Called at the end of each `process()` function after generating results
+
+### Image Output Saving
+
+- `save_outputs(images, output_dir, prefix)` in `utils.py` saves generated images as timestamped PNGs
+- Called automatically after each generation in `process_relight()` and `process_normal()`
+- Output directory configurable via `--output-dir` CLI arg (default: `./outputs/`)
+- Files named `{prefix}_{timestamp}_{index}.png` (e.g., `fc_relight_20250207_143022_00.png`)

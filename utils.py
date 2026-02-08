@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import math
+from datetime import datetime
 import numpy as np
 import torch
 import safetensors.torch as sf
@@ -31,6 +32,8 @@ def parse_common_args(description='IC-Light Demo'):
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Server host (default: 0.0.0.0)')
     parser.add_argument('--port', type=int, default=7860, help='Server port (default: 7860)')
     parser.add_argument('--model-dir', type=str, default='./models', help='Directory for model weights (default: ./models)')
+    parser.add_argument('--model', type=str, default='stablediffusionapi/realistic-vision-v51', help='HuggingFace model name for SD1.5 base (default: stablediffusionapi/realistic-vision-v51)')
+    parser.add_argument('--output-dir', type=str, default='./outputs', help='Directory for saved outputs (default: ./outputs)')
     return parser.parse_args()
 
 
@@ -79,6 +82,20 @@ def clear_gpu_cache(device):
         torch.cuda.empty_cache()
     elif device.type == 'mps':
         torch.mps.empty_cache()
+
+
+def save_outputs(images, output_dir, prefix='relight'):
+    """Save output images to the output directory."""
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    saved_paths = []
+    for i, img in enumerate(images):
+        filename = f'{prefix}_{timestamp}_{i:02d}.png'
+        filepath = os.path.join(output_dir, filename)
+        Image.fromarray(img).save(filepath)
+        saved_paths.append(filepath)
+        logger.info("Saved output to %s", filepath)
+    return saved_paths
 
 
 # --- UNet Setup ---

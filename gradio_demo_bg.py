@@ -13,7 +13,7 @@ from utils import (
     get_default_scheduler, create_pipelines,
     encode_prompt_pair, pytorch2numpy, numpy2pytorch,
     resize_and_center_crop, resize_without_crop, run_rmbg,
-    clear_gpu_cache,
+    clear_gpu_cache, save_outputs,
 )
 
 # CLI args and logging
@@ -22,7 +22,7 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 # Load models
-sd15_name = 'stablediffusionapi/realistic-vision-v51'
+sd15_name = args.model
 tokenizer, text_encoder, vae, unet, rmbg = load_models(sd15_name)
 
 # Change UNet (12-channel for foreground+background-conditioned model)
@@ -50,13 +50,25 @@ default_scheduler = get_default_scheduler(device, ddim_scheduler, dpmpp_2m_sde_k
 # Pipelines
 t2i_pipe, i2i_pipe = create_pipelines(vae, text_encoder, tokenizer, unet, default_scheduler)
 
+# Scheduler selection
+scheduler_map = {
+    'DDIM': ddim_scheduler,
+    'Euler a': euler_a_scheduler,
+    'DPM++ 2M SDE Karras': dpmpp_2m_sde_karras_scheduler,
+}
+default_scheduler_name = 'DDIM' if device.type == 'mps' else 'DPM++ 2M SDE Karras'
+
 
 @torch.inference_mode()
-def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, progress=None):
+def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, scheduler_name=None, progress=None):
     if input_fg is None:
         raise gr.Error("Please upload a foreground image.")
     image_width = int(image_width) // 64 * 64
     image_height = int(image_height) // 64 * 64
+
+    scheduler = scheduler_map.get(scheduler_name, default_scheduler)
+    t2i_pipe.scheduler = scheduler
+    i2i_pipe.scheduler = scheduler
 
     bg_source = BGSource(bg_source)
 
@@ -166,14 +178,15 @@ def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, 
 
 
 @torch.inference_mode()
-def process_relight(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, progress=gr.Progress()):
+def process_relight(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, scheduler_name, progress=gr.Progress()):
     try:
         progress(0, desc="Removing background...")
         input_fg, matting = run_rmbg(input_fg, rmbg, device)
         progress(0.1, desc="Processing...")
-        results, extra_images = process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, progress=progress)
+        results, extra_images = process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, scheduler_name=scheduler_name, progress=progress)
         results = [(x * 255.0).clip(0, 255).astype(np.uint8) for x in results]
         extra_images = [img if img.dtype == np.uint8 else (img * 255.0).clip(0, 255).astype(np.uint8) if img.max() <= 1.0 else img.clip(0, 255).astype(np.uint8) for img in extra_images]
+        save_outputs(results, args.output_dir, prefix='fbc_relight')
         progress(1.0, desc="Done!")
         return results + extra_images
     except gr.Error:
@@ -190,22 +203,22 @@ def process_relight(input_fg, input_bg, prompt, image_width, image_height, num_s
 
 
 @torch.inference_mode()
-def process_normal(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, progress=gr.Progress()):
+def process_normal(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, scheduler_name, progress=gr.Progress()):
     try:
         progress(0, desc="Removing background...")
         input_fg, matting = run_rmbg(input_fg, rmbg, device, sigma=16)
 
         progress(0.05, desc="Computing normals: left...")
-        left = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.LEFT.value)[0][0]
+        left = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.LEFT.value, scheduler_name=scheduler_name)[0][0]
 
         progress(0.25, desc="Computing normals: right...")
-        right = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.RIGHT.value)[0][0]
+        right = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.RIGHT.value, scheduler_name=scheduler_name)[0][0]
 
         progress(0.50, desc="Computing normals: bottom...")
-        bottom = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.BOTTOM.value)[0][0]
+        bottom = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.BOTTOM.value, scheduler_name=scheduler_name)[0][0]
 
         progress(0.75, desc="Computing normals: top...")
-        top = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.TOP.value)[0][0]
+        top = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.TOP.value, scheduler_name=scheduler_name)[0][0]
 
         inner_results = [left * 2.0 - 1.0, right * 2.0 - 1.0, bottom * 2.0 - 1.0, top * 2.0 - 1.0]
 
@@ -238,6 +251,7 @@ def process_normal(input_fg, input_bg, prompt, image_width, image_height, num_sa
 
         results = [normal, left, right, bottom, top] + inner_results
         results = [(x * 127.5 + 127.5).clip(0, 255).astype(np.uint8) for x in results]
+        save_outputs(results, args.output_dir, prefix='fbc_normal')
         progress(1.0, desc="Done!")
         return results
     except gr.Error:
@@ -303,6 +317,9 @@ with block:
                     image_height = gr.Slider(label="Image Height", minimum=256, maximum=1024, value=640, step=64)
 
             with gr.Accordion("Advanced options", open=False):
+                scheduler_dropdown = gr.Dropdown(
+                    choices=list(scheduler_map.keys()), value=default_scheduler_name,
+                    label="Scheduler")
                 steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=20, step=1)
                 cfg = gr.Slider(label="CFG Scale", minimum=1.0, maximum=32.0, value=7.0, step=0.01)
                 highres_scale = gr.Slider(label="Highres Scale", minimum=1.0, maximum=3.0, value=1.5, step=0.01)
@@ -329,7 +346,7 @@ with block:
         outputs=[input_fg, input_bg, prompt, bg_source, image_width, image_height, seed]
     )
 
-    ips = [input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source]
+    ips = [input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, scheduler_dropdown]
     relight_button.click(fn=process_relight, inputs=ips, outputs=[result_gallery])
     normal_button.click(fn=process_normal, inputs=ips, outputs=[result_gallery])
     example_prompts.click(lambda x: x[0], inputs=example_prompts, outputs=prompt, show_progress=False, queue=False)
