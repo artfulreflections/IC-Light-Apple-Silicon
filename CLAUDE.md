@@ -28,9 +28,12 @@ python gradio_demo.py
 
 # Background-conditioned relighting
 python gradio_demo_bg.py
+
+# CLI options (both demos)
+python gradio_demo.py --host 0.0.0.0 --port 7860 --model-dir ./models
 ```
 
-Models download automatically to `./models/` on first run. The Gradio UI launches on `0.0.0.0:7860`.
+Models download automatically to `./models/` (or `--model-dir`) on first run. The Gradio UI launches on `0.0.0.0:7860` by default (configurable via `--host`/`--port`).
 
 **Device Support**: Code automatically detects and uses MPS (Apple Silicon), CUDA (NVIDIA GPU), or CPU. On MPS, VAE uses float16 instead of bfloat16 for compatibility.
 
@@ -55,6 +58,7 @@ Both demos use a two-pass approach:
 
 ### Key Components
 
+- `utils.py`: Shared utility module containing device detection, model loading, schedulers, pipelines, image conversion, prompt encoding, and background removal functions. Both demos import from here.
 - `briarmbg.py`: BRIA RMBG 1.4 background removal model (U2-Net architecture). Used to extract foreground alpha mattes via `run_rmbg()`. Non-commercial license — replace with BiRefNet for commercial use.
 - `db_examples.py`: Hardcoded example data (image paths, prompts, settings) for the Gradio UI example galleries.
 - `imgs/`: Example input images and pre-computed outputs. `imgs/bgs/` contains background images for the background-conditioned demo.

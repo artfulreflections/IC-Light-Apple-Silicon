@@ -1,259 +1,62 @@
+import logging
 import os
-import math
 import gradio as gr
 import numpy as np
 import torch
-import safetensors.torch as sf
 import db_examples
 
-from PIL import Image
-from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline
-from diffusers import AutoencoderKL, UNet2DConditionModel, DDIMScheduler, EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler
-from diffusers.models.attention_processor import AttnProcessor2_0
-from transformers import CLIPTextModel, CLIPTokenizer
-from briarmbg import BriaRMBG
 from enum import Enum
-from torch.hub import download_url_to_file
+from utils import (
+    parse_common_args, setup_logging,
+    get_device, load_models, setup_unet, load_and_merge_weights,
+    move_models_to_device, enable_sdp, create_schedulers,
+    get_default_scheduler, create_pipelines,
+    encode_prompt_pair, pytorch2numpy, numpy2pytorch,
+    resize_and_center_crop, resize_without_crop, run_rmbg,
+)
 
+# CLI args and logging
+args = parse_common_args(description='IC-Light: Foreground Conditioned Relighting')
+setup_logging()
+logger = logging.getLogger(__name__)
 
-# 'stablediffusionapi/realistic-vision-v51'
-# 'runwayml/stable-diffusion-v1-5'
+# Load models
 sd15_name = 'stablediffusionapi/realistic-vision-v51'
-tokenizer = CLIPTokenizer.from_pretrained(sd15_name, subfolder="tokenizer")
-text_encoder = CLIPTextModel.from_pretrained(sd15_name, subfolder="text_encoder")
-vae = AutoencoderKL.from_pretrained(sd15_name, subfolder="vae")
-unet = UNet2DConditionModel.from_pretrained(sd15_name, subfolder="unet")
-rmbg = BriaRMBG.from_pretrained("briaai/RMBG-1.4")
+tokenizer, text_encoder, vae, unet, rmbg = load_models(sd15_name)
 
-# Change UNet
+# Change UNet (8-channel for foreground-conditioned model)
+unet = setup_unet(unet, in_channels=8)
 
-with torch.no_grad():
-    new_conv_in = torch.nn.Conv2d(8, unet.conv_in.out_channels, unet.conv_in.kernel_size, unet.conv_in.stride, unet.conv_in.padding)
-    new_conv_in.weight.zero_()
-    new_conv_in.weight[:, :4, :, :].copy_(unet.conv_in.weight)
-    new_conv_in.bias = unet.conv_in.bias
-    unet.conv_in = new_conv_in
-
-unet_original_forward = unet.forward
-
-
-def hooked_unet_forward(sample, timestep, encoder_hidden_states, **kwargs):
-    c_concat = kwargs['cross_attention_kwargs']['concat_conds'].to(sample)
-    c_concat = torch.cat([c_concat] * (sample.shape[0] // c_concat.shape[0]), dim=0)
-    new_sample = torch.cat([sample, c_concat], dim=1)
-    kwargs['cross_attention_kwargs'] = {}
-    return unet_original_forward(new_sample, timestep, encoder_hidden_states, **kwargs)
-
-
-unet.forward = hooked_unet_forward
-
-# Load
-
-model_path = './models/iclight_sd15_fc.safetensors'
-os.makedirs('./models', exist_ok=True)
-
-if not os.path.exists(model_path):
-    download_url_to_file(url='https://huggingface.co/lllyasviel/ic-light/resolve/main/iclight_sd15_fc.safetensors', dst=model_path)
-
-sd_offset = sf.load_file(model_path)
-sd_origin = unet.state_dict()
-keys = sd_origin.keys()
-sd_merged = {k: sd_origin[k] + sd_offset[k] for k in sd_origin.keys()}
-unet.load_state_dict(sd_merged, strict=True)
-del sd_offset, sd_origin, sd_merged, keys
+# Load weights
+model_path = os.path.join(args.model_dir, 'iclight_sd15_fc.safetensors')
+load_and_merge_weights(
+    unet,
+    model_path=model_path,
+    model_url='https://huggingface.co/lllyasviel/ic-light/resolve/main/iclight_sd15_fc.safetensors',
+)
 
 # Device
-
-# Use MPS for Apple Silicon, CUDA if available, otherwise CPU
-if torch.backends.mps.is_available():
-    device = torch.device('mps')
-    print("Using MPS (Metal Performance Shaders) for Apple Silicon")
-elif torch.cuda.is_available():
-    device = torch.device('cuda')
-    print("Using CUDA")
-else:
-    device = torch.device('cpu')
-    print("Using CPU")
-
-# MPS doesn't support bfloat16 as well as CUDA, so use float16 for all on MPS
-if device.type == 'mps':
-    text_encoder = text_encoder.to(device=device, dtype=torch.float16)
-    vae = vae.to(device=device, dtype=torch.float16)  # Changed from bfloat16 for MPS compatibility
-    unet = unet.to(device=device, dtype=torch.float16)
-    rmbg = rmbg.to(device=device, dtype=torch.float32)
-else:
-    text_encoder = text_encoder.to(device=device, dtype=torch.float16)
-    vae = vae.to(device=device, dtype=torch.bfloat16)
-    unet = unet.to(device=device, dtype=torch.float16)
-    rmbg = rmbg.to(device=device, dtype=torch.float32)
+device = get_device()
+text_encoder, vae, unet, rmbg = move_models_to_device(device, text_encoder, vae, unet, rmbg)
 
 # SDP
-
-unet.set_attn_processor(AttnProcessor2_0())
-vae.set_attn_processor(AttnProcessor2_0())
+enable_sdp(unet, vae)
 
 # Samplers
-
-ddim_scheduler = DDIMScheduler(
-    num_train_timesteps=1000,
-    beta_start=0.00085,
-    beta_end=0.012,
-    beta_schedule="scaled_linear",
-    clip_sample=False,
-    set_alpha_to_one=False,
-    steps_offset=1,
-)
-
-euler_a_scheduler = EulerAncestralDiscreteScheduler(
-    num_train_timesteps=1000,
-    beta_start=0.00085,
-    beta_end=0.012,
-    steps_offset=1
-)
-
-dpmpp_2m_sde_karras_scheduler = DPMSolverMultistepScheduler(
-    num_train_timesteps=1000,
-    beta_start=0.00085,
-    beta_end=0.012,
-    algorithm_type="sde-dpmsolver++",
-    use_karras_sigmas=True,
-    steps_offset=1
-)
+ddim_scheduler, euler_a_scheduler, dpmpp_2m_sde_karras_scheduler = create_schedulers()
+default_scheduler = get_default_scheduler(device, ddim_scheduler, dpmpp_2m_sde_karras_scheduler)
 
 # Pipelines
-
-# Use DDIM scheduler for MPS compatibility (DPMSolver has indexing issues on MPS)
-default_scheduler = ddim_scheduler if device.type == 'mps' else dpmpp_2m_sde_karras_scheduler
-
-t2i_pipe = StableDiffusionPipeline(
-    vae=vae,
-    text_encoder=text_encoder,
-    tokenizer=tokenizer,
-    unet=unet,
-    scheduler=default_scheduler,
-    safety_checker=None,
-    requires_safety_checker=False,
-    feature_extractor=None,
-    image_encoder=None
-)
-
-i2i_pipe = StableDiffusionImg2ImgPipeline(
-    vae=vae,
-    text_encoder=text_encoder,
-    tokenizer=tokenizer,
-    unet=unet,
-    scheduler=default_scheduler,
-    safety_checker=None,
-    requires_safety_checker=False,
-    feature_extractor=None,
-    image_encoder=None
-)
-
-
-@torch.inference_mode()
-def encode_prompt_inner(txt: str):
-    max_length = tokenizer.model_max_length
-    chunk_length = tokenizer.model_max_length - 2
-    id_start = tokenizer.bos_token_id
-    id_end = tokenizer.eos_token_id
-    id_pad = id_end
-
-    def pad(x, p, i):
-        return x[:i] if len(x) >= i else x + [p] * (i - len(x))
-
-    tokens = tokenizer(txt, truncation=False, add_special_tokens=False)["input_ids"]
-    chunks = [[id_start] + tokens[i: i + chunk_length] + [id_end] for i in range(0, len(tokens), chunk_length)]
-    chunks = [pad(ck, id_pad, max_length) for ck in chunks]
-
-    token_ids = torch.tensor(chunks).to(device=device, dtype=torch.int64)
-    conds = text_encoder(token_ids).last_hidden_state
-
-    return conds
-
-
-@torch.inference_mode()
-def encode_prompt_pair(positive_prompt, negative_prompt):
-    c = encode_prompt_inner(positive_prompt)
-    uc = encode_prompt_inner(negative_prompt)
-
-    c_len = float(len(c))
-    uc_len = float(len(uc))
-    max_count = max(c_len, uc_len)
-    c_repeat = int(math.ceil(max_count / c_len))
-    uc_repeat = int(math.ceil(max_count / uc_len))
-    max_chunk = max(len(c), len(uc))
-
-    c = torch.cat([c] * c_repeat, dim=0)[:max_chunk]
-    uc = torch.cat([uc] * uc_repeat, dim=0)[:max_chunk]
-
-    c = torch.cat([p[None, ...] for p in c], dim=1)
-    uc = torch.cat([p[None, ...] for p in uc], dim=1)
-
-    return c, uc
-
-
-@torch.inference_mode()
-def pytorch2numpy(imgs, quant=True):
-    results = []
-    for x in imgs:
-        y = x.movedim(0, -1)
-
-        if quant:
-            y = y * 127.5 + 127.5
-            y = y.detach().float().cpu().numpy().clip(0, 255).astype(np.uint8)
-        else:
-            y = y * 0.5 + 0.5
-            y = y.detach().float().cpu().numpy().clip(0, 1).astype(np.float32)
-
-        results.append(y)
-    return results
-
-
-@torch.inference_mode()
-def numpy2pytorch(imgs):
-    h = torch.from_numpy(np.stack(imgs, axis=0)).float() / 127.0 - 1.0  # so that 127 must be strictly 0.0
-    h = h.movedim(-1, 1)
-    return h
-
-
-def resize_and_center_crop(image, target_width, target_height):
-    pil_image = Image.fromarray(image)
-    original_width, original_height = pil_image.size
-    scale_factor = max(target_width / original_width, target_height / original_height)
-    resized_width = int(round(original_width * scale_factor))
-    resized_height = int(round(original_height * scale_factor))
-    resized_image = pil_image.resize((resized_width, resized_height), Image.LANCZOS)
-    left = (resized_width - target_width) / 2
-    top = (resized_height - target_height) / 2
-    right = (resized_width + target_width) / 2
-    bottom = (resized_height + target_height) / 2
-    cropped_image = resized_image.crop((left, top, right, bottom))
-    return np.array(cropped_image)
-
-
-def resize_without_crop(image, target_width, target_height):
-    pil_image = Image.fromarray(image)
-    resized_image = pil_image.resize((target_width, target_height), Image.LANCZOS)
-    return np.array(resized_image)
-
-
-@torch.inference_mode()
-def run_rmbg(img, sigma=0.0):
-    H, W, C = img.shape
-    assert C == 3
-    k = (256.0 / float(H * W)) ** 0.5
-    feed = resize_without_crop(img, int(64 * round(W * k)), int(64 * round(H * k)))
-    feed = numpy2pytorch([feed]).to(device=device, dtype=torch.float32)
-    alpha = rmbg(feed)[0][0]
-    alpha = torch.nn.functional.interpolate(alpha, size=(H, W), mode="bilinear")
-    alpha = alpha.movedim(1, -1)[0]
-    alpha = alpha.detach().float().cpu().numpy().clip(0, 1)
-    result = 127 + (img.astype(np.float32) - 127 + sigma) * alpha
-    return result.clip(0, 255).astype(np.uint8), alpha
+t2i_pipe, i2i_pipe = create_pipelines(vae, text_encoder, tokenizer, unet, default_scheduler)
 
 
 @torch.inference_mode()
 def process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
+    if input_fg is None:
+        raise gr.Error("Please upload an input image.")
+    image_width = int(image_width) // 64 * 64
+    image_height = int(image_height) // 64 * 64
+
     bg_source = BGSource(bg_source)
     input_bg = None
 
@@ -285,7 +88,7 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
     concat_conds = numpy2pytorch([fg]).to(device=vae.device, dtype=vae.dtype)
     concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
 
-    conds, unconds = encode_prompt_pair(positive_prompt=prompt + ', ' + a_prompt, negative_prompt=n_prompt)
+    conds, unconds = encode_prompt_pair(prompt + ', ' + a_prompt, n_prompt, tokenizer, text_encoder, device)
 
     if input_bg is None:
         latents = t2i_pipe(
@@ -359,7 +162,7 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
 
 @torch.inference_mode()
 def process_relight(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
-    input_fg, matting = run_rmbg(input_fg)
+    input_fg, matting = run_rmbg(input_fg, rmbg, device)
     results = process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source)
     return input_fg, results
 
@@ -456,4 +259,4 @@ with block:
     example_quick_subjects.click(lambda x: x[0], inputs=example_quick_subjects, outputs=prompt, show_progress=False, queue=False)
 
 
-block.launch(server_name='0.0.0.0', allowed_paths=[os.path.abspath('imgs/')])
+block.launch(server_name=args.host, server_port=args.port, allowed_paths=[os.path.abspath('imgs/')])
