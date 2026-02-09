@@ -15,13 +15,13 @@ IC-Light ("Imposing Consistent Light") is a research project for manipulating im
 # Apple Silicon / macOS (Python 3.12 recommended)
 python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e .
 
 # CUDA / Windows / Linux
-conda create -n iclight python=3.10
+conda create -n iclight python=3.12
 conda activate iclight
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-pip install -r requirements.txt
+pip install -e .
 
 # Text-conditioned relighting
 python gradio_demo.py
@@ -31,6 +31,10 @@ python gradio_demo_bg.py
 
 # CLI options (both demos)
 python gradio_demo.py --host 0.0.0.0 --port 7860 --model-dir ./models --model stablediffusionapi/realistic-vision-v51 --output-dir ./outputs
+
+# Tests and linting
+pytest tests/
+ruff check .
 ```
 
 Models download automatically to `./models/` (or `--model-dir`) on first run. The Gradio UI launches on `0.0.0.0:7860` by default (configurable via `--host`/`--port`). Generated images are auto-saved to `./outputs/` (or `--output-dir`).
@@ -63,6 +67,8 @@ Both demos use a two-pass approach:
 - `briarmbg.py`: BRIA RMBG 1.4 background removal model (U2-Net architecture). Used to extract foreground alpha mattes via `run_rmbg()`. Non-commercial license — replace with BiRefNet for commercial use.
 - `db_examples.py`: Hardcoded example data (image paths, prompts, settings) for the Gradio UI example galleries.
 - `imgs/`: Example input images and pre-computed outputs. `imgs/bgs/` contains background images for the background-conditioned demo.
+- `TECHNICAL.md`: In-depth technical documentation covering pipeline flow, weight merging, normal map computation, precision handling, and improvement paths.
+- `tests/test_utils.py`: Unit tests for utility functions (`pytest tests/`).
 
 ### Tensor Conversion Conventions
 
@@ -89,7 +95,8 @@ Key versions: `diffusers>=0.36.0`, `transformers>=5.1.0`, `gradio>=6.5.0`, `peft
 - Image data must be uint8 numpy arrays for proper display
 - `gr.Examples` has a bug generating malformed file URLs — use `gr.Gallery` + `select` handler instead
 - `block.launch()` requires `allowed_paths=[os.path.abspath('imgs/')]` to serve example images
-- `gr.Progress()` as last param in handler functions enables progress bars in UI
+- `gr.Progress(track_tqdm=True)` as last param in handler functions captures diffusers' internal tqdm progress bars in the Gradio UI. Do NOT use `callback_on_step_end` — it doesn't flush to the SSE frontend.
+- Gradio 6 info text DOM: `[data-testid='block-info']` is the **label** span, not the info text. The info tip text is the next sibling `<div>` containing `.prose`. Use `span.nextElementSibling` in JS to target info tips.
 
 ### Error Handling
 

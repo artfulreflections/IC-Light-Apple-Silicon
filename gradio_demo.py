@@ -1,19 +1,36 @@
 import logging
 import os
+import random
+from enum import Enum
+
 import gradio as gr
 import numpy as np
 import torch
-import db_examples
 
-from enum import Enum
+import db_examples
 from utils import (
-    parse_common_args, setup_logging,
-    get_device, load_models, setup_unet, load_and_merge_weights,
-    move_models_to_device, enable_sdp, create_schedulers,
-    get_default_scheduler, create_pipelines,
-    encode_prompt_pair, pytorch2numpy, numpy2pytorch,
-    resize_and_center_crop, resize_without_crop, run_rmbg,
-    clear_gpu_cache, save_outputs,
+    clear_gpu_cache,
+    create_pipelines,
+    create_schedulers,
+    enable_sdp,
+    encode_prompt_pair,
+    get_default_scheduler,
+    get_device,
+    get_favorite_seeds_choices,
+    load_and_merge_weights,
+    load_favorite_seeds,
+    load_models,
+    move_models_to_device,
+    numpy2pytorch,
+    parse_common_args,
+    pytorch2numpy,
+    resize_and_center_crop,
+    resize_without_crop,
+    run_rmbg,
+    save_favorite_seed,
+    save_outputs,
+    setup_logging,
+    setup_unet,
 )
 
 # CLI args and logging
@@ -102,11 +119,11 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
     concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
 
     if progress:
-        progress(0.15, desc="Encoding prompts...")
+        progress(0.12, desc="Encoding text prompt with CLIP...")
     conds, unconds = encode_prompt_pair(prompt + ', ' + a_prompt, n_prompt, tokenizer, text_encoder, device)
 
     if progress:
-        progress(0.25, desc="Generating (low-res)...")
+        progress(0.15, desc="Low-res generation: denoising with UNet...")
     if input_bg is None:
         latents = t2i_pipe(
             prompt_embeds=conds,
@@ -139,16 +156,19 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
             cross_attention_kwargs={'concat_conds': concat_conds},
         ).images.to(vae.dtype) / vae.config.scaling_factor
 
+    if progress:
+        progress(0.48, desc="Decoding low-res result...")
     pixels = vae.decode(latents).sample
     pixels = pytorch2numpy(pixels)
+
+    if progress:
+        progress(0.50, desc=f"Upscaling to {highres_scale}x and re-encoding...")
     pixels = [resize_without_crop(
         image=p,
         target_width=int(round(image_width * highres_scale / 64.0) * 64),
         target_height=int(round(image_height * highres_scale / 64.0) * 64))
     for p in pixels]
 
-    if progress:
-        progress(0.55, desc="Refining (high-res)...")
     pixels = numpy2pytorch(pixels).to(device=vae.device, dtype=vae.dtype)
     latents = vae.encode(pixels).latent_dist.mode() * vae.config.scaling_factor
     latents = latents.to(device=unet.device, dtype=unet.dtype)
@@ -159,6 +179,8 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
     concat_conds = numpy2pytorch([fg]).to(device=vae.device, dtype=vae.dtype)
     concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
 
+    if progress:
+        progress(0.55, desc="High-res refinement: denoising with UNet...")
     latents = i2i_pipe(
         image=latents,
         strength=highres_denoise,
@@ -173,9 +195,8 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
         guidance_scale=cfg,
         cross_attention_kwargs={'concat_conds': concat_conds},
     ).images.to(vae.dtype) / vae.config.scaling_factor
-
     if progress:
-        progress(0.9, desc="Decoding...")
+        progress(0.95, desc="Decoding final image...")
     pixels = vae.decode(latents).sample
 
     clear_gpu_cache(device)
@@ -183,13 +204,13 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
 
 
 @torch.inference_mode()
-def process_relight(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, scheduler_name, progress=gr.Progress()):
+def process_relight(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, scheduler_name, progress=gr.Progress(track_tqdm=True)):
     try:
-        progress(0, desc="Removing background...")
+        progress(0, desc="Removing background with RMBG...")
         input_fg, matting = run_rmbg(input_fg, rmbg, device)
-        progress(0.1, desc="Processing...")
+        progress(0.1, desc="Encoding foreground into latent space...")
         results = process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, scheduler_name=scheduler_name, progress=progress)
-        save_outputs(results, args.output_dir, prefix='fc_relight')
+        save_outputs(results, args.output_dir, prefix='fc_relight', seed=seed)
         progress(1.0, desc="Done!")
         return input_fg, results
     except gr.Error:
@@ -243,41 +264,81 @@ block = gr.Blocks().queue()
 with block:
     with gr.Row():
         gr.Markdown("## IC-Light (Relighting with Foreground Condition)")
+        show_tips = gr.Checkbox(label="Show Help Tips", value=True, scale=0)
     with gr.Row():
         with gr.Column():
             with gr.Row():
                 input_fg = gr.Image(sources=['upload'], type="numpy", label="Image", height=480)
                 output_bg = gr.Image(type="numpy", label="Preprocessed Foreground", height=480)
-            prompt = gr.Textbox(label="Prompt")
+            prompt = gr.Textbox(label="Prompt", info="Combine a subject + lighting style. Example: 'beautiful woman, detailed face, sunshine from window'. Use the quick lists below for inspiration.")
             bg_source = gr.Radio(choices=[e.value for e in BGSource],
                                  value=BGSource.NONE.value,
-                                 label="Lighting Preference (Initial Latent)", type='value')
+                                 label="Lighting Preference (Initial Latent)", type='value',
+                                 info="None: Model decides lighting freely from prompt only. Left/Right/Top/Bottom: Creates a light-to-dark gradient as a starting point, biasing light toward that direction.")
             example_quick_subjects = gr.Dataset(samples=quick_subjects, label='Subject Quick List', samples_per_page=1000, components=[prompt])
             example_quick_prompts = gr.Dataset(samples=quick_prompts, label='Lighting Quick List', samples_per_page=1000, components=[prompt])
             relight_button = gr.Button(value="Relight")
 
+            with gr.Row():
+                aspect_ratio = gr.Dropdown(
+                    choices=["Portrait (512x640)", "Square (512x512)", "Landscape (640x512)", "Custom"],
+                    value="Portrait (512x640)", label="Aspect Ratio",
+                    info="Quick size presets. Choose 'Custom' to set width/height manually.", scale=1)
+                quality_preset = gr.Dropdown(
+                    choices=["Fast Draft", "Balanced", "High Quality", "Custom"],
+                    value="Balanced", label="Quality Preset",
+                    info="Fast Draft: 15 steps, no upscale. Balanced: 25 steps, 1.5x upscale. High Quality: 40 steps, 2x upscale.", scale=1)
+
             with gr.Group():
                 with gr.Row():
-                    num_samples = gr.Slider(label="Images", minimum=1, maximum=12, value=1, step=1)
-                    seed = gr.Number(label="Seed", value=12345, precision=0)
+                    num_samples = gr.Slider(label="Images", minimum=1, maximum=12, value=1, step=1, info="1: Single image, fastest. 2-4: Compare variations. 5+: Batch generation, multiplies processing time linearly.")
+                    seed = gr.Number(label="Seed", value=12345, precision=0, minimum=0, maximum=2**31, info="Controls randomness (0 to 2,147,483,648). Same seed + same settings = identical output. Nearby seeds produce completely unrelated results — use Randomize to explore variations.")
+                    randomize_seed = gr.Button("Randomize", scale=0, min_width=90)
 
                 with gr.Row():
-                    image_width = gr.Slider(label="Image Width", minimum=256, maximum=1024, value=512, step=64)
-                    image_height = gr.Slider(label="Image Height", minimum=256, maximum=1024, value=640, step=64)
+                    favorite_seeds_dropdown = gr.Dropdown(
+                        label="Load Favorite Seed",
+                        choices=get_favorite_seeds_choices(args.output_dir),
+                        info="Select a previously saved favorite seed to load it.",
+                        interactive=True
+                    )
+                    seed_label = gr.Textbox(label="Seed Label (optional)", placeholder="e.g., Golden sunset", scale=1)
+                    save_seed_btn = gr.Button("💾 Save Seed", scale=0, min_width=110)
+
+                with gr.Row():
+                    image_width = gr.Slider(label="Image Width", minimum=256, maximum=1024, value=512, step=64, info="256-384: Thumbnail/fast preview. 512: Default, best model quality. 768+: Larger but may degrade since model was trained at 512px.")
+                    image_height = gr.Slider(label="Image Height", minimum=256, maximum=1024, value=640, step=64, info="256-384: Thumbnail/fast preview. 512-640: Default portrait size. 768+: Larger but may degrade since model was trained at 512px.")
 
             with gr.Accordion("Advanced options", open=False):
                 scheduler_dropdown = gr.Dropdown(
                     choices=list(scheduler_map.keys()), value=default_scheduler_name,
-                    label="Scheduler")
-                steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=25, step=1)
-                cfg = gr.Slider(label="CFG Scale", minimum=1.0, maximum=32.0, value=2, step=0.01)
-                lowres_denoise = gr.Slider(label="Lowres Denoise (for initial latent)", minimum=0.1, maximum=1.0, value=0.9, step=0.01)
-                highres_scale = gr.Slider(label="Highres Scale", minimum=1.0, maximum=3.0, value=1.5, step=0.01)
-                highres_denoise = gr.Slider(label="Highres Denoise", minimum=0.1, maximum=1.0, value=0.5, step=0.01)
-                a_prompt = gr.Textbox(label="Added Prompt", value='best quality')
-                n_prompt = gr.Textbox(label="Negative Prompt", value='lowres, bad anatomy, bad hands, cropped, worst quality')
+                    label="Scheduler",
+                    info="DDIM: Stable, MPS-compatible, consistent results. Euler a: Fast, slightly random variations. DPM++ 2M SDE Karras: Highest quality, CUDA-only.")
+                steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=25, step=1,
+                    info="10-15: Fast draft, visible noise. 20-30: Best quality/speed balance. 50+: Diminishing returns, much slower. Each step removes noise from the image.")
+                cfg = gr.Slider(label="CFG Scale", minimum=1.0, maximum=32.0, value=2, step=0.01,
+                    info="1-2: Creative, loose interpretation of prompt. 3-5: Natural balance. 7-12: Strict prompt adherence. 15+: Over-saturated, artifacts likely. Controls how strongly the text prompt guides generation.")
+                lowres_denoise = gr.Slider(label="Lowres Denoise (for initial latent)", minimum=0.1, maximum=1.0, value=0.9, step=0.01,
+                    info="0.1-0.3: Keeps most of the lighting gradient intact. 0.5-0.7: Moderate reshaping. 0.8-1.0: Full creative freedom, ignores gradient. Only active when a Light Direction is selected.")
+                highres_scale = gr.Slider(label="Highres Scale", minimum=1.0, maximum=3.0, value=1.5, step=0.01,
+                    info="1.0: No upscale (faster, less detail). 1.5: Default, good detail boost. 2.0+: Large output, sharp details, but uses significantly more memory and time.")
+                highres_denoise = gr.Slider(label="Highres Denoise", minimum=0.1, maximum=1.0, value=0.5, step=0.01,
+                    info="0.1-0.3: Subtle sharpening, preserves low-res output closely. 0.4-0.5: Balanced refinement, adds detail. 0.6+: Major rework during upscale, may change composition.")
+                a_prompt = gr.Textbox(label="Added Prompt", value='best quality',
+                    info="Automatically appended to your prompt. Common boosters: 'best quality', 'detailed face', 'sharp focus', '8k'.")
+                n_prompt = gr.Textbox(label="Negative Prompt", value='lowres, bad anatomy, bad hands, cropped, worst quality',
+                    info="Steers generation away from these concepts. Helps prevent deformed hands, low resolution, and common diffusion artifacts.")
         with gr.Column():
             result_gallery = gr.Gallery(height=832, object_fit='contain', label='Outputs')
+            with gr.Accordion("Pipeline Stages (what the progress bar is doing)", open=False):
+                gr.Markdown("""| Stage | Progress | What's Happening |
+|---|---|---|
+| Background Removal | 0-10% | BRIA RMBG extracts the foreground subject from the uploaded image |
+| Encoding | 10-15% | VAE compresses foreground to latent space, CLIP encodes your text prompt |
+| Low-Res Generation | 15-50% | UNet denoises a latent image step-by-step, guided by your prompt and foreground |
+| Upscale + Re-encode | ~50% | Low-res result is upscaled by Highres Scale factor, then re-encoded to latent space |
+| High-Res Refinement | 50-95% | UNet refines the upscaled image, adding detail at the higher resolution |
+| Decode + Save | 95-100% | VAE decodes final latent to pixels, image saved to outputs/ directory |""")
     with gr.Row():
         example_gallery = gr.Gallery(
             height=200, object_fit='contain', label='Example Inputs',
@@ -292,6 +353,73 @@ with block:
     example_gallery.select(
         example_selected, inputs=None,
         outputs=[input_fg, prompt, bg_source, image_width, image_height, seed]
+    )
+
+    randomize_seed.click(fn=lambda: random.randint(0, 2**31), inputs=[], outputs=[seed], show_progress=False, queue=False)
+
+    def handle_save_seed(current_seed, label):
+        """Save the current seed to favorites."""
+        if current_seed is None:
+            return gr.update(choices=get_favorite_seeds_choices(args.output_dir)), "⚠️ No seed to save"
+
+        success = save_favorite_seed(args.output_dir, int(current_seed), label)
+        if success:
+            # Refresh dropdown choices
+            return gr.update(choices=get_favorite_seeds_choices(args.output_dir)), f"✅ Saved seed {int(current_seed)}"
+        else:
+            return gr.update(choices=get_favorite_seeds_choices(args.output_dir)), "❌ Failed to save seed"
+
+    def handle_load_favorite(choice):
+        """Load a favorite seed from the dropdown."""
+        if choice is None:
+            return gr.update()
+        # Extract seed from choice (format is "Label (seed: 12345)")
+        try:
+            seed_str = choice.split("seed: ")[1].rstrip(")")
+            return int(seed_str)
+        except (IndexError, ValueError):
+            return gr.update()
+
+    save_seed_btn.click(
+        handle_save_seed,
+        inputs=[seed, seed_label],
+        outputs=[favorite_seeds_dropdown, seed_label],
+        show_progress=False,
+        queue=False
+    )
+
+    favorite_seeds_dropdown.change(
+        handle_load_favorite,
+        inputs=[favorite_seeds_dropdown],
+        outputs=[seed],
+        show_progress=False,
+        queue=False
+    )
+
+    def set_aspect_ratio(choice):
+        presets = {"Portrait (512x640)": (512, 640), "Square (512x512)": (512, 512), "Landscape (640x512)": (640, 512)}
+        return presets.get(choice, (gr.update(), gr.update()))
+
+    aspect_ratio.change(set_aspect_ratio, inputs=[aspect_ratio], outputs=[image_width, image_height], show_progress=False, queue=False)
+
+    def set_quality_preset(choice):
+        presets = {"Fast Draft": (15, 2.0, 1.0, 0.5), "Balanced": (25, 2.0, 1.5, 0.5), "High Quality": (40, 2.0, 2.0, 0.4)}
+        if choice in presets:
+            return presets[choice]
+        return gr.update(), gr.update(), gr.update(), gr.update()
+
+    quality_preset.change(set_quality_preset, inputs=[quality_preset], outputs=[steps, cfg, highres_scale, highres_denoise], show_progress=False, queue=False)
+
+    show_tips.change(
+        fn=None, inputs=[show_tips], outputs=[],
+        js="""(v) => {
+            document.querySelectorAll('[data-testid="block-info"]').forEach(span => {
+                let sib = span.nextElementSibling;
+                if (sib && sib.querySelector('.prose')) {
+                    sib.style.display = v ? '' : 'none';
+                }
+            });
+        }"""
     )
 
     ips = [input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, scheduler_dropdown]

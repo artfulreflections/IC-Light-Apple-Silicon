@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import os
 import math
@@ -85,13 +86,16 @@ def clear_gpu_cache(device: torch.device) -> None:
         torch.mps.empty_cache()
 
 
-def save_outputs(images: list[np.ndarray], output_dir: str, prefix: str = 'relight') -> list[str]:
-    """Save output images to the output directory."""
+def save_outputs(images: list[np.ndarray], output_dir: str, prefix: str = 'relight', seed: Optional[int] = None) -> list[str]:
+    """Save output images to the output directory with optional seed in filename."""
     os.makedirs(output_dir, exist_ok=True)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     saved_paths = []
     for i, img in enumerate(images):
-        filename = f'{prefix}_{timestamp}_{i:02d}.png'
+        if seed is not None:
+            filename = f'{prefix}_{timestamp}_seed{seed}_{i:02d}.png'
+        else:
+            filename = f'{prefix}_{timestamp}_{i:02d}.png'
         filepath = os.path.join(output_dir, filename)
         Image.fromarray(img).save(filepath)
         saved_paths.append(filepath)
@@ -332,3 +336,81 @@ def run_rmbg(img: np.ndarray, rmbg_model: BriaRMBG, device: torch.device, sigma:
     alpha = alpha.detach().float().cpu().numpy().clip(0, 1)
     result = 127 + (img.astype(np.float32) - 127 + sigma) * alpha
     return result.clip(0, 255).astype(np.uint8), alpha
+
+
+# --- Favorite Seeds Management ---
+
+def get_favorites_path(output_dir: str) -> str:
+    """Get the path to the favorite_seeds.json file."""
+    return os.path.join(output_dir, 'favorite_seeds.json')
+
+
+def load_favorite_seeds(output_dir: str) -> list[dict[str, Any]]:
+    """Load favorite seeds from JSON file."""
+    favorites_path = get_favorites_path(output_dir)
+    if not os.path.exists(favorites_path):
+        return []
+
+    try:
+        with open(favorites_path, 'r') as f:
+            favorites = json.load(f)
+            logger.info("Loaded %d favorite seeds from %s", len(favorites), favorites_path)
+            return favorites
+    except Exception as e:
+        logger.error("Failed to load favorite seeds: %s", e)
+        return []
+
+
+def save_favorite_seed(output_dir: str, seed: int, label: str = "", settings: Optional[dict[str, Any]] = None) -> bool:
+    """Save a favorite seed to JSON file."""
+    favorites = load_favorite_seeds(output_dir)
+
+    # Create new favorite entry
+    new_favorite = {
+        'seed': int(seed),
+        'label': label or f"Seed {seed}",
+        'timestamp': datetime.now().isoformat(),
+    }
+
+    # Add settings if provided
+    if settings:
+        new_favorite['settings'] = settings
+
+    # Check if seed already exists
+    existing_idx = None
+    for idx, fav in enumerate(favorites):
+        if fav['seed'] == seed:
+            existing_idx = idx
+            break
+
+    if existing_idx is not None:
+        # Update existing entry
+        favorites[existing_idx] = new_favorite
+        logger.info("Updated existing favorite seed %d", seed)
+    else:
+        # Add new entry
+        favorites.append(new_favorite)
+        logger.info("Added new favorite seed %d", seed)
+
+    # Save to file
+    favorites_path = get_favorites_path(output_dir)
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        with open(favorites_path, 'w') as f:
+            json.dump(favorites, f, indent=2)
+        logger.info("Saved favorite seeds to %s", favorites_path)
+        return True
+    except Exception as e:
+        logger.error("Failed to save favorite seeds: %s", e)
+        return False
+
+
+def get_favorite_seeds_choices(output_dir: str) -> list[tuple[str, int]]:
+    """Get favorite seeds as choices for Gradio dropdown."""
+    favorites = load_favorite_seeds(output_dir)
+    if not favorites:
+        return []
+
+    # Return list of (label, seed) tuples
+    choices = [(f"{fav['label']} (seed: {fav['seed']})", fav['seed']) for fav in favorites]
+    return choices
