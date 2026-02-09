@@ -208,12 +208,12 @@ def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, 
 
 
 @torch.inference_mode()
-def process_relight(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, scheduler_name, progress=gr.Progress(track_tqdm=True)):
+def process_relight(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, scheduler_name, progress=gr.Progress(track_tqdm=True)):
     try:
         progress(0, desc="Removing background with RMBG...")
         input_fg, matting = run_rmbg(input_fg, rmbg, device)
         progress(0.1, desc="Encoding foreground + background into latent space...")
-        results, extra_images = process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, scheduler_name=scheduler_name, progress=progress)
+        results, extra_images = process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, fg_brightness=fg_brightness, fg_contrast=fg_contrast, fg_saturation=fg_saturation, scheduler_name=scheduler_name, progress=progress)
         results = [(x * 255.0).clip(0, 255).astype(np.uint8) for x in results]
         extra_images = [img if img.dtype == np.uint8 else (img * 255.0).clip(0, 255).astype(np.uint8) if img.max() <= 1.0 else img.clip(0, 255).astype(np.uint8) for img in extra_images]
         save_outputs(results, args.output_dir, prefix='fbc_relight', seed=seed)
@@ -395,6 +395,15 @@ with block:
                     info="1.0: No upscale (faster, less detail). 1.5: Default, good detail boost. 2.0+: Large output, sharp details, but uses significantly more memory and time.")
                 highres_denoise = gr.Slider(label="Highres Denoise", minimum=0.1, maximum=0.9, value=0.5, step=0.01,
                     info="0.1-0.3: Subtle sharpening, preserves low-res output closely. 0.4-0.5: Balanced refinement, adds detail. 0.6+: Major rework during upscale, may change composition.")
+
+                gr.Markdown("### Foreground Preprocessing")
+                fg_brightness = gr.Slider(label="Brightness", minimum=-100, maximum=100, value=0, step=1,
+                    info="-100 to +100. Adjust foreground brightness before processing. Negative values darken, positive brighten.")
+                fg_contrast = gr.Slider(label="Contrast", minimum=0.5, maximum=2.0, value=1.0, step=0.01,
+                    info="0.5 to 2.0. Adjust foreground contrast. <1.0 reduces contrast, >1.0 increases it.")
+                fg_saturation = gr.Slider(label="Saturation", minimum=0.0, maximum=2.0, value=1.0, step=0.01,
+                    info="0.0 to 2.0. Adjust color intensity. 0.0 = grayscale, 1.0 = original, >1.0 = vivid.")
+
                 a_prompt = gr.Textbox(label="Added Prompt", value='best quality',
                     info="Automatically appended to your prompt. Common boosters: 'best quality', 'detailed face', 'sharp focus', '8k'.")
                 n_prompt = gr.Textbox(label="Negative Prompt",
@@ -657,7 +666,7 @@ with block:
         }"""
     )
 
-    ips = [input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, scheduler_dropdown]
+    ips = [input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, scheduler_dropdown]
     relight_event = relight_button.click(fn=process_relight, inputs=ips, outputs=[result_gallery])
     normal_event = normal_button.click(fn=process_normal, inputs=ips, outputs=[result_gallery])
     cancel_button.click(fn=None, inputs=None, outputs=None, cancels=[relight_event, normal_event])
