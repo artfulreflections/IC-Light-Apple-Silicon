@@ -208,10 +208,10 @@ def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, 
 
 
 @torch.inference_mode()
-def process_relight(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, scheduler_name, progress=gr.Progress(track_tqdm=True)):
+def process_relight(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, fg_sigma, fg_blend_strength, scheduler_name, progress=gr.Progress(track_tqdm=True)):
     try:
         progress(0, desc="Removing background with RMBG...")
-        input_fg, matting = run_rmbg(input_fg, rmbg, device)
+        input_fg, matting = run_rmbg(input_fg, rmbg, device, sigma=fg_sigma, blend_strength=fg_blend_strength)
         progress(0.1, desc="Encoding foreground + background into latent space...")
         results, extra_images = process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, fg_brightness=fg_brightness, fg_contrast=fg_contrast, fg_saturation=fg_saturation, scheduler_name=scheduler_name, progress=progress)
         results = [(x * 255.0).clip(0, 255).astype(np.uint8) for x in results]
@@ -233,10 +233,10 @@ def process_relight(input_fg, input_bg, prompt, image_width, image_height, num_s
 
 
 @torch.inference_mode()
-def process_normal(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, scheduler_name, progress=gr.Progress(track_tqdm=True)):
+def process_normal(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, fg_sigma, fg_blend_strength, scheduler_name, progress=gr.Progress(track_tqdm=True)):
     try:
         progress(0, desc="Removing background...")
-        input_fg, matting = run_rmbg(input_fg, rmbg, device, sigma=16)
+        input_fg, matting = run_rmbg(input_fg, rmbg, device, sigma=fg_sigma if fg_sigma != 0 else 16, blend_strength=fg_blend_strength)
 
         progress(0.05, desc="Computing normals: left...")
         left = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.LEFT.value, scheduler_name=scheduler_name)[0][0]
@@ -396,13 +396,17 @@ with block:
                 highres_denoise = gr.Slider(label="Highres Denoise", minimum=0.1, maximum=0.9, value=0.5, step=0.01,
                     info="0.1-0.3: Subtle sharpening, preserves low-res output closely. 0.4-0.5: Balanced refinement, adds detail. 0.6+: Major rework during upscale, may change composition.")
 
-                gr.Markdown("### Foreground Preprocessing")
+                gr.Markdown("### Foreground Controls")
                 fg_brightness = gr.Slider(label="Brightness", minimum=-100, maximum=100, value=0, step=1,
                     info="-100 to +100. Adjust foreground brightness before processing. Negative values darken, positive brighten.")
                 fg_contrast = gr.Slider(label="Contrast", minimum=0.5, maximum=2.0, value=1.0, step=0.01,
                     info="0.5 to 2.0. Adjust foreground contrast. <1.0 reduces contrast, >1.0 increases it.")
                 fg_saturation = gr.Slider(label="Saturation", minimum=0.0, maximum=2.0, value=1.0, step=0.01,
                     info="0.0 to 2.0. Adjust color intensity. 0.0 = grayscale, 1.0 = original, >1.0 = vivid.")
+                fg_sigma = gr.Slider(label="RMBG Sigma", minimum=-255, maximum=255, value=0, step=1,
+                    info="-255 to +255. Brightness shift applied to foreground during background removal. Adjust if edges are too bright/dark. For normal computation, defaults to 16 if set to 0.")
+                fg_blend_strength = gr.Slider(label="Blend Strength", minimum=0.0, maximum=1.0, value=1.0, step=0.01,
+                    info="0.0 to 1.0. Controls alpha mask intensity. Lower values make background removal less aggressive, keeping more of original image.")
 
                 a_prompt = gr.Textbox(label="Added Prompt", value='best quality',
                     info="Automatically appended to your prompt. Common boosters: 'best quality', 'detailed face', 'sharp focus', '8k'.")
@@ -666,7 +670,7 @@ with block:
         }"""
     )
 
-    ips = [input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, scheduler_dropdown]
+    ips = [input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, fg_sigma, fg_blend_strength, scheduler_dropdown]
     relight_event = relight_button.click(fn=process_relight, inputs=ips, outputs=[result_gallery])
     normal_event = normal_button.click(fn=process_normal, inputs=ips, outputs=[result_gallery])
     cancel_button.click(fn=None, inputs=None, outputs=None, cancels=[relight_event, normal_event])

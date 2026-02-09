@@ -211,10 +211,10 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
 
 
 @torch.inference_mode()
-def process_relight(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, scheduler_name, progress=gr.Progress(track_tqdm=True)):
+def process_relight(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, fg_sigma, fg_blend_strength, scheduler_name, progress=gr.Progress(track_tqdm=True)):
     try:
         progress(0, desc="Removing background with RMBG...")
-        input_fg, matting = run_rmbg(input_fg, rmbg, device)
+        input_fg, matting = run_rmbg(input_fg, rmbg, device, sigma=fg_sigma, blend_strength=fg_blend_strength)
         progress(0.1, desc="Encoding foreground into latent space...")
         results = process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, fg_brightness=fg_brightness, fg_contrast=fg_contrast, fg_saturation=fg_saturation, scheduler_name=scheduler_name, progress=progress)
         save_outputs(results, args.output_dir, prefix='fc_relight', seed=seed)
@@ -331,6 +331,19 @@ with block:
                     info="1.0: No upscale (faster, less detail). 1.5: Default, good detail boost. 2.0+: Large output, sharp details, but uses significantly more memory and time.")
                 highres_denoise = gr.Slider(label="Highres Denoise", minimum=0.1, maximum=1.0, value=0.5, step=0.01,
                     info="0.1-0.3: Subtle sharpening, preserves low-res output closely. 0.4-0.5: Balanced refinement, adds detail. 0.6+: Major rework during upscale, may change composition.")
+
+                gr.Markdown("### Foreground Controls")
+                fg_brightness = gr.Slider(label="Brightness", minimum=-100, maximum=100, value=0, step=1,
+                    info="-100 to +100. Adjust foreground brightness before processing. Negative values darken, positive brighten.")
+                fg_contrast = gr.Slider(label="Contrast", minimum=0.5, maximum=2.0, value=1.0, step=0.01,
+                    info="0.5 to 2.0. Adjust foreground contrast. <1.0 reduces contrast, >1.0 increases it.")
+                fg_saturation = gr.Slider(label="Saturation", minimum=0.0, maximum=2.0, value=1.0, step=0.01,
+                    info="0.0 to 2.0. Adjust color intensity. 0.0 = grayscale, 1.0 = original, >1.0 = vivid.")
+                fg_sigma = gr.Slider(label="RMBG Sigma", minimum=-255, maximum=255, value=0, step=1,
+                    info="-255 to +255. Brightness shift applied to foreground during background removal. Adjust if edges are too bright/dark.")
+                fg_blend_strength = gr.Slider(label="Blend Strength", minimum=0.0, maximum=1.0, value=1.0, step=0.01,
+                    info="0.0 to 1.0. Controls alpha mask intensity. Lower values make background removal less aggressive, keeping more of original image.")
+
                 a_prompt = gr.Textbox(label="Added Prompt", value='best quality',
                     info="Automatically appended to your prompt. Common boosters: 'best quality', 'detailed face', 'sharp focus', '8k'.")
                 n_prompt = gr.Textbox(label="Negative Prompt", value='lowres, bad anatomy, bad hands, cropped, worst quality',
@@ -592,7 +605,7 @@ with block:
         }"""
     )
 
-    ips = [input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, scheduler_dropdown]
+    ips = [input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, fg_sigma, fg_blend_strength, scheduler_dropdown]
     relight_button.click(fn=process_relight, inputs=ips, outputs=[output_bg, result_gallery])
     example_quick_prompts.click(lambda x, y: ', '.join(y.split(', ')[:2] + [x[0]]), inputs=[example_quick_prompts, prompt], outputs=prompt, show_progress=False, queue=False)
     example_quick_subjects.click(lambda x: x[0], inputs=example_quick_subjects, outputs=prompt, show_progress=False, queue=False)

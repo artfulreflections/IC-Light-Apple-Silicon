@@ -324,7 +324,20 @@ def resize_without_crop(image: np.ndarray, target_width: int, target_height: int
 # --- Background Removal ---
 
 @torch.inference_mode()
-def run_rmbg(img: np.ndarray, rmbg_model: BriaRMBG, device: torch.device, sigma: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+def run_rmbg(img: np.ndarray, rmbg_model: BriaRMBG, device: torch.device, sigma: float = 0.0, blend_strength: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Remove background using RMBG model.
+
+    Args:
+        img: Input image
+        rmbg_model: Background removal model
+        device: Torch device
+        sigma: Brightness adjustment applied to foreground before blending (-255 to +255)
+        blend_strength: Controls alpha mask strength (0.0 to 1.0). Lower values make background removal less aggressive.
+
+    Returns:
+        Tuple of (foreground image, alpha mask)
+    """
     H, W, C = img.shape
     assert C == 3
     k = (256.0 / float(H * W)) ** 0.5
@@ -334,6 +347,11 @@ def run_rmbg(img: np.ndarray, rmbg_model: BriaRMBG, device: torch.device, sigma:
     alpha = torch.nn.functional.interpolate(alpha, size=(H, W), mode="bilinear")
     alpha = alpha.movedim(1, -1)[0]
     alpha = alpha.detach().float().cpu().numpy().clip(0, 1)
+
+    # Apply blend strength to alpha mask
+    alpha = alpha * blend_strength
+    alpha = alpha.clip(0, 1)
+
     result = 127 + (img.astype(np.float32) - 127 + sigma) * alpha
     return result.clip(0, 255).astype(np.uint8), alpha
 
