@@ -12,13 +12,15 @@ from utils import (
     clear_gpu_cache,
     create_pipelines,
     create_schedulers,
+    delete_preset,
     enable_sdp,
     encode_prompt_pair,
     get_default_scheduler,
     get_device,
     get_favorite_seeds_choices,
+    get_preset_by_name,
+    get_preset_choices,
     load_and_merge_weights,
-    load_favorite_seeds,
     load_models,
     move_models_to_device,
     numpy2pytorch,
@@ -29,6 +31,7 @@ from utils import (
     run_rmbg,
     save_favorite_seed,
     save_outputs,
+    save_preset,
     setup_logging,
     setup_unet,
 )
@@ -330,6 +333,35 @@ with block:
                     info="Steers generation away from these concepts. Helps prevent deformed hands, low resolution, and common diffusion artifacts.")
         with gr.Column():
             result_gallery = gr.Gallery(height=832, object_fit='contain', label='Outputs')
+
+            # Preset Management Panel
+            with gr.Accordion("📸 Preset Library", open=False):
+                gr.Markdown("Save complete workflows (prompt + settings + seed) for reproducible results.")
+
+                with gr.Row():
+                    preset_name_input = gr.Textbox(
+                        label="Preset Name",
+                        placeholder="e.g., Golden Hour Portrait",
+                        scale=3
+                    )
+                    save_preset_btn = gr.Button("💾 Save Current as Preset", scale=1, variant="primary")
+
+                preset_status = gr.Markdown("")
+
+                with gr.Row():
+                    preset_dropdown = gr.Dropdown(
+                        label="Load Preset",
+                        choices=get_preset_choices(args.output_dir),
+                        info="Select a preset to load all its settings",
+                        interactive=True,
+                        scale=3
+                    )
+                    load_preset_btn = gr.Button("📂 Load", scale=1)
+                    delete_preset_btn = gr.Button("🗑️ Delete", scale=1, variant="stop")
+
+                with gr.Accordion("Preset Details", open=False):
+                    preset_details = gr.JSON(label="Settings", value={})
+
             with gr.Accordion("Pipeline Stages (what the progress bar is doing)", open=False):
                 gr.Markdown("""| Stage | Progress | What's Happening |
 |---|---|---|
@@ -392,6 +424,140 @@ with block:
         handle_load_favorite,
         inputs=[favorite_seeds_dropdown],
         outputs=[seed],
+        show_progress=False,
+        queue=False
+    )
+
+    # Preset handlers
+    def handle_save_preset(name, current_prompt, current_bg_source, current_seed, current_steps, current_cfg,
+                          current_image_width, current_image_height, current_num_samples,
+                          current_lowres_denoise, current_highres_scale, current_highres_denoise,
+                          current_a_prompt, current_n_prompt, current_scheduler):
+        """Save current settings as a preset."""
+        if not name or not name.strip():
+            return gr.update(), gr.update(), "⚠️ Please enter a preset name"
+
+        # Collect all settings
+        settings = {
+            'prompt': current_prompt,
+            'bg_source': current_bg_source,
+            'seed': int(current_seed) if current_seed is not None else 12345,
+            'steps': int(current_steps),
+            'cfg': float(current_cfg),
+            'image_width': int(current_image_width),
+            'image_height': int(current_image_height),
+            'num_samples': int(current_num_samples),
+            'lowres_denoise': float(current_lowres_denoise),
+            'highres_scale': float(current_highres_scale),
+            'highres_denoise': float(current_highres_denoise),
+            'a_prompt': current_a_prompt,
+            'n_prompt': current_n_prompt,
+            'scheduler': current_scheduler
+        }
+
+        success = save_preset(args.output_dir, name.strip(), settings)
+        if success:
+            return (
+                gr.update(choices=get_preset_choices(args.output_dir)),
+                gr.update(value=settings),
+                f"✅ Saved preset '{name.strip()}'"
+            )
+        else:
+            return gr.update(), gr.update(), "❌ Failed to save preset"
+
+    def handle_load_preset(preset_name):
+        """Load a preset and return all settings."""
+        if not preset_name:
+            return [gr.update()] * 14 + [{}] + [""]
+
+        preset = get_preset_by_name(args.output_dir, preset_name)
+        if not preset:
+            return [gr.update()] * 14 + [{}] + ["❌ Preset not found"]
+
+        s = preset['settings']
+        return [
+            s.get('prompt', ''),
+            s.get('bg_source', 'None'),
+            s.get('seed', 12345),
+            s.get('steps', 25),
+            s.get('cfg', 2.0),
+            s.get('image_width', 512),
+            s.get('image_height', 640),
+            s.get('num_samples', 1),
+            s.get('lowres_denoise', 0.9),
+            s.get('highres_scale', 1.5),
+            s.get('highres_denoise', 0.5),
+            s.get('a_prompt', 'best quality'),
+            s.get('n_prompt', 'lowres, bad anatomy, bad hands, cropped, worst quality'),
+            s.get('scheduler', 'DDIM'),
+            s,  # preset_details
+            f"✅ Loaded preset '{preset_name}'"
+        ]
+
+    def handle_delete_preset(preset_name):
+        """Delete a preset."""
+        if not preset_name:
+            return gr.update(), gr.update(), "⚠️ No preset selected"
+
+        success = delete_preset(args.output_dir, preset_name)
+        if success:
+            return (
+                gr.update(choices=get_preset_choices(args.output_dir), value=None),
+                gr.update(value={}),
+                f"✅ Deleted preset '{preset_name}'"
+            )
+        else:
+            return gr.update(), gr.update(), "❌ Failed to delete preset"
+
+    def handle_preset_selection(preset_name):
+        """Update preset details when selection changes."""
+        if not preset_name:
+            return {}
+
+        preset = get_preset_by_name(args.output_dir, preset_name)
+        if preset:
+            return preset['settings']
+        return {}
+
+    save_preset_btn.click(
+        handle_save_preset,
+        inputs=[
+            preset_name_input, prompt, bg_source, seed, steps, cfg,
+            image_width, image_height, num_samples,
+            lowres_denoise, highres_scale, highres_denoise,
+            a_prompt, n_prompt, scheduler_dropdown
+        ],
+        outputs=[preset_dropdown, preset_details, preset_status],
+        show_progress=False,
+        queue=False
+    )
+
+    load_preset_btn.click(
+        handle_load_preset,
+        inputs=[preset_dropdown],
+        outputs=[
+            prompt, bg_source, seed, steps, cfg,
+            image_width, image_height, num_samples,
+            lowres_denoise, highres_scale, highres_denoise,
+            a_prompt, n_prompt, scheduler_dropdown,
+            preset_details, preset_status
+        ],
+        show_progress=False,
+        queue=False
+    )
+
+    delete_preset_btn.click(
+        handle_delete_preset,
+        inputs=[preset_dropdown],
+        outputs=[preset_dropdown, preset_details, preset_status],
+        show_progress=False,
+        queue=False
+    )
+
+    preset_dropdown.change(
+        handle_preset_selection,
+        inputs=[preset_dropdown],
+        outputs=[preset_details],
         show_progress=False,
         queue=False
     )

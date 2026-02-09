@@ -2,9 +2,10 @@
 """Quick test for seed management functions"""
 
 import os
-import tempfile
 import shutil
-from utils import save_favorite_seed, load_favorite_seeds, get_favorite_seeds_choices
+import tempfile
+
+from utils import get_favorite_seeds_choices, load_favorite_seeds, save_favorite_seed
 
 def test_seed_management():
     # Create a temporary directory for testing

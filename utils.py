@@ -414,3 +414,105 @@ def get_favorite_seeds_choices(output_dir: str) -> list[tuple[str, int]]:
     # Return list of (label, seed) tuples
     choices = [(f"{fav['label']} (seed: {fav['seed']})", fav['seed']) for fav in favorites]
     return choices
+
+
+# --- Preset Management ---
+
+def get_presets_path(output_dir: str) -> str:
+    """Get the path to the presets.json file."""
+    return os.path.join(output_dir, 'presets.json')
+
+
+def load_presets(output_dir: str) -> list[dict[str, Any]]:
+    """Load presets from JSON file."""
+    presets_path = get_presets_path(output_dir)
+    if not os.path.exists(presets_path):
+        return []
+
+    try:
+        with open(presets_path, 'r') as f:
+            presets = json.load(f)
+            logger.info("Loaded %d presets from %s", len(presets), presets_path)
+            return presets
+    except Exception as e:
+        logger.error("Failed to load presets: %s", e)
+        return []
+
+
+def save_preset(output_dir: str, name: str, settings: dict[str, Any]) -> bool:
+    """Save a complete preset with all settings."""
+    presets = load_presets(output_dir)
+
+    # Create new preset entry
+    new_preset = {
+        'name': name,
+        'timestamp': datetime.now().isoformat(),
+        'settings': settings
+    }
+
+    # Check if preset with same name already exists
+    existing_idx = None
+    for idx, preset in enumerate(presets):
+        if preset['name'] == name:
+            existing_idx = idx
+            break
+
+    if existing_idx is not None:
+        # Update existing entry
+        presets[existing_idx] = new_preset
+        logger.info("Updated existing preset '%s'", name)
+    else:
+        # Add new entry
+        presets.append(new_preset)
+        logger.info("Added new preset '%s'", name)
+
+    # Save to file
+    presets_path = get_presets_path(output_dir)
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        with open(presets_path, 'w') as f:
+            json.dump(presets, f, indent=2)
+        logger.info("Saved presets to %s", presets_path)
+        return True
+    except Exception as e:
+        logger.error("Failed to save presets: %s", e)
+        return False
+
+
+def delete_preset(output_dir: str, name: str) -> bool:
+    """Delete a preset by name."""
+    presets = load_presets(output_dir)
+
+    # Find and remove preset
+    presets = [p for p in presets if p['name'] != name]
+
+    # Save to file
+    presets_path = get_presets_path(output_dir)
+    try:
+        with open(presets_path, 'w') as f:
+            json.dump(presets, f, indent=2)
+        logger.info("Deleted preset '%s'", name)
+        return True
+    except Exception as e:
+        logger.error("Failed to delete preset: %s", e)
+        return False
+
+
+def get_preset_choices(output_dir: str) -> list[str]:
+    """Get preset names as choices for Gradio dropdown."""
+    presets = load_presets(output_dir)
+    if not presets:
+        return []
+
+    # Return list of preset names
+    choices = [preset['name'] for preset in presets]
+    return choices
+
+
+def get_preset_by_name(output_dir: str, name: str) -> Optional[dict[str, Any]]:
+    """Get a specific preset by name."""
+    presets = load_presets(output_dir)
+    for preset in presets:
+        if preset['name'] == name:
+            return preset
+    return None
