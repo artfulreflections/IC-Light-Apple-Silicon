@@ -25,6 +25,7 @@ from utils import (
     move_models_to_device,
     numpy2pytorch,
     parse_common_args,
+    preprocess_foreground,
     pytorch2numpy,
     resize_and_center_crop,
     resize_without_crop,
@@ -80,9 +81,13 @@ default_scheduler_name = 'DDIM' if device.type == 'mps' else 'DPM++ 2M SDE Karra
 
 
 @torch.inference_mode()
-def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, scheduler_name=None, progress=None):
+def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, fg_brightness=0, fg_contrast=1.0, fg_saturation=1.0, scheduler_name=None, progress=None):
     if input_fg is None:
         raise gr.Error("Please upload a foreground image.")
+
+    # Apply preprocessing to foreground
+    input_fg = preprocess_foreground(input_fg, brightness=fg_brightness, contrast=fg_contrast, saturation=fg_saturation)
+
     image_width = int(image_width) // 64 * 64
     image_height = int(image_height) // 64 * 64
 
@@ -319,7 +324,7 @@ block = gr.Blocks().queue()
 with block:
     with gr.Row():
         gr.Markdown("## IC-Light (Relighting with Foreground and Background Condition)")
-        show_tips = gr.Checkbox(label="Show Help Tips", value=True, scale=0)
+        show_tips = gr.Checkbox(label="Show Help Tips", value=False, scale=0)
     with gr.Row():
         with gr.Column():
             with gr.Row():
@@ -333,7 +338,19 @@ with block:
 
             example_prompts = gr.Dataset(samples=quick_prompts, label='Prompt Quick List', components=[prompt])
             bg_gallery = gr.Gallery(height=450, object_fit='contain', label='Background Quick List', value=db_examples.bg_samples, columns=5, allow_preview=False)
-            relight_button = gr.Button(value="Relight")
+
+            preview_button = gr.Button(value="Preview Foreground", variant="secondary")
+            preview_gallery = gr.Gallery(
+                label="Foreground Preview",
+                height=400,
+                columns=3,
+                object_fit='contain',
+                visible=False
+            )
+
+            with gr.Row():
+                relight_button = gr.Button(value="Relight", variant="primary", scale=3)
+                cancel_button = gr.Button(value="Cancel", variant="stop", scale=1)
 
             with gr.Row():
                 aspect_ratio = gr.Dropdown(
@@ -342,7 +359,7 @@ with block:
                     info="Quick size presets. Choose 'Custom' to set width/height manually.", scale=1)
                 quality_preset = gr.Dropdown(
                     choices=["Fast Draft", "Balanced", "High Quality", "Custom"],
-                    value="Balanced", label="Quality Preset",
+                    value="Fast Draft", label="Quality Preset",
                     info="Fast Draft: 15 steps, no upscale. Balanced: 20 steps, 1.5x upscale. High Quality: 35 steps, 2x upscale.", scale=1)
 
             with gr.Group():
@@ -641,8 +658,21 @@ with block:
     )
 
     ips = [input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, scheduler_dropdown]
-    relight_button.click(fn=process_relight, inputs=ips, outputs=[result_gallery])
-    normal_button.click(fn=process_normal, inputs=ips, outputs=[result_gallery])
+    relight_event = relight_button.click(fn=process_relight, inputs=ips, outputs=[result_gallery])
+    normal_event = normal_button.click(fn=process_normal, inputs=ips, outputs=[result_gallery])
+    cancel_button.click(fn=None, inputs=None, outputs=None, cancels=[relight_event, normal_event])
+
+    preview_button.click(
+        fn=handle_preview_foreground,
+        inputs=[input_fg],
+        outputs=[preview_gallery],
+        show_progress=True
+    ).then(
+        fn=lambda x: gr.update(visible=True),
+        inputs=[preview_gallery],
+        outputs=[preview_gallery]
+    )
+
     example_prompts.click(lambda x: x[0], inputs=example_prompts, outputs=prompt, show_progress=False, queue=False)
 
     def bg_gallery_selected(evt: gr.SelectData):

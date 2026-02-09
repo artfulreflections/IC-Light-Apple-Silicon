@@ -80,9 +80,13 @@ default_scheduler_name = 'DDIM' if device.type == 'mps' else 'DPM++ 2M SDE Karra
 
 
 @torch.inference_mode()
-def process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, scheduler_name=None, progress=None):
+def process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, fg_brightness=0, fg_contrast=1.0, fg_saturation=1.0, scheduler_name=None, progress=None):
     if input_fg is None:
         raise gr.Error("Please upload an input image.")
+
+    # Apply preprocessing to foreground
+    input_fg = preprocess_foreground(input_fg, brightness=fg_brightness, contrast=fg_contrast, saturation=fg_saturation)
+
     image_width = int(image_width) // 64 * 64
     image_height = int(image_height) // 64 * 64
 
@@ -207,12 +211,12 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
 
 
 @torch.inference_mode()
-def process_relight(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, scheduler_name, progress=gr.Progress(track_tqdm=True)):
+def process_relight(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, scheduler_name, progress=gr.Progress(track_tqdm=True)):
     try:
         progress(0, desc="Removing background with RMBG...")
         input_fg, matting = run_rmbg(input_fg, rmbg, device)
         progress(0.1, desc="Encoding foreground into latent space...")
-        results = process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, scheduler_name=scheduler_name, progress=progress)
+        results = process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, fg_brightness=fg_brightness, fg_contrast=fg_contrast, fg_saturation=fg_saturation, scheduler_name=scheduler_name, progress=progress)
         save_outputs(results, args.output_dir, prefix='fc_relight', seed=seed)
         progress(1.0, desc="Done!")
         return input_fg, results
@@ -267,7 +271,7 @@ block = gr.Blocks().queue()
 with block:
     with gr.Row():
         gr.Markdown("## IC-Light (Relighting with Foreground Condition)")
-        show_tips = gr.Checkbox(label="Show Help Tips", value=True, scale=0)
+        show_tips = gr.Checkbox(label="Show Help Tips", value=False, scale=0)
     with gr.Row():
         with gr.Column():
             with gr.Row():
@@ -289,7 +293,7 @@ with block:
                     info="Quick size presets. Choose 'Custom' to set width/height manually.", scale=1)
                 quality_preset = gr.Dropdown(
                     choices=["Fast Draft", "Balanced", "High Quality", "Custom"],
-                    value="Balanced", label="Quality Preset",
+                    value="Fast Draft", label="Quality Preset",
                     info="Fast Draft: 15 steps, no upscale. Balanced: 25 steps, 1.5x upscale. High Quality: 40 steps, 2x upscale.", scale=1)
 
             with gr.Group():
@@ -588,7 +592,7 @@ with block:
         }"""
     )
 
-    ips = [input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, scheduler_dropdown]
+    ips = [input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, scheduler_dropdown]
     relight_button.click(fn=process_relight, inputs=ips, outputs=[output_bg, result_gallery])
     example_quick_prompts.click(lambda x, y: ', '.join(y.split(', ')[:2] + [x[0]]), inputs=[example_quick_prompts, prompt], outputs=prompt, show_progress=False, queue=False)
     example_quick_subjects.click(lambda x: x[0], inputs=example_quick_subjects, outputs=prompt, show_progress=False, queue=False)
