@@ -26,6 +26,7 @@ from utils import (
     numpy2pytorch,
     parse_common_args,
     preprocess_foreground,
+    preview_foreground,
     pytorch2numpy,
     resize_and_center_crop,
     resize_without_crop,
@@ -232,6 +233,35 @@ def process_relight(input_fg, input_bg, prompt, image_width, image_height, num_s
         raise gr.Error(f"An error occurred: {e}")
 
 
+def process_preview_foreground(input_fg, fg_brightness, fg_contrast, fg_saturation, fg_sigma, fg_blend_strength, mask_blur, mask_expand, mask_threshold, progress=gr.Progress(track_tqdm=True)):
+    """Preview preprocessed foreground without running full relight."""
+    try:
+        if input_fg is None or (isinstance(input_fg, np.ndarray) and input_fg.size == 0):
+            raise gr.Error("Please upload an image in the 'Image' field before previewing")
+
+        progress(0, desc="Generating preview...")
+        preprocessed = preview_foreground(
+            input_fg,
+            rmbg,
+            device,
+            brightness=fg_brightness,
+            contrast=fg_contrast,
+            saturation=fg_saturation,
+            sigma=fg_sigma,
+            blend_strength=fg_blend_strength,
+            mask_blur=mask_blur,
+            mask_expand=mask_expand,
+            mask_threshold=mask_threshold,
+        )
+        progress(1.0, desc="Preview ready!")
+        return preprocessed, gr.update(visible=True)
+    except gr.Error:
+        raise
+    except Exception as e:
+        logger.exception("Unexpected error during preview")
+        raise gr.Error(f"An error occurred: {e}")
+
+
 @torch.inference_mode()
 def process_normal(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, fg_sigma, fg_blend_strength, mask_blur, mask_expand, mask_threshold, scheduler_name, progress=gr.Progress(track_tqdm=True)):
     try:
@@ -339,18 +369,17 @@ with block:
             example_prompts = gr.Dataset(samples=quick_prompts, label='Prompt Quick List', components=[prompt])
             bg_gallery = gr.Gallery(height=450, object_fit='contain', label='Background Quick List', value=db_examples.bg_samples, columns=5, allow_preview=False)
 
-            preview_button = gr.Button(value="Preview Foreground", variant="secondary")
-            preview_gallery = gr.Gallery(
-                label="Foreground Preview",
+            preview_gallery = gr.Image(
+                label="Preprocessed Foreground",
                 height=400,
-                columns=3,
-                object_fit='contain',
+                type="numpy",
                 visible=False
             )
 
             with gr.Row():
-                relight_button = gr.Button(value="Relight", variant="primary", scale=3)
-                cancel_button = gr.Button(value="Cancel", variant="stop", scale=1)
+                preview_button = gr.Button(value="👁️ Preview Foreground", variant="secondary")
+                relight_button = gr.Button(value="✨ Relight", variant="primary")
+                cancel_button = gr.Button(value="⏹️ Cancel", variant="stop")
 
             with gr.Row():
                 aspect_ratio = gr.Dropdown(
@@ -679,20 +708,22 @@ with block:
     )
 
     ips = [input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, fg_sigma, fg_blend_strength, mask_blur, mask_expand, mask_threshold, scheduler_dropdown]
+    preview_ips = [input_fg, fg_brightness, fg_contrast, fg_saturation, fg_sigma, fg_blend_strength, mask_blur, mask_expand, mask_threshold]
+
+    # Wire up preview button (shows preprocessed foreground in dedicated preview section)
+    preview_event = preview_button.click(
+        fn=process_preview_foreground,
+        inputs=preview_ips,
+        outputs=[preview_gallery, preview_gallery],
+        show_progress=True
+    )
+
+    # Wire up relight and normal buttons
     relight_event = relight_button.click(fn=process_relight, inputs=ips, outputs=[result_gallery])
     normal_event = normal_button.click(fn=process_normal, inputs=ips, outputs=[result_gallery])
-    cancel_button.click(fn=None, inputs=None, outputs=None, cancels=[relight_event, normal_event])
 
-    preview_button.click(
-        fn=handle_preview_foreground,
-        inputs=[input_fg],
-        outputs=[preview_gallery],
-        show_progress=True
-    ).then(
-        fn=lambda x: gr.update(visible=True),
-        inputs=[preview_gallery],
-        outputs=[preview_gallery]
-    )
+    # Wire up cancel button to stop all operations
+    cancel_button.click(fn=None, inputs=None, outputs=None, cancels=[preview_event, relight_event, normal_event])
 
     example_prompts.click(lambda x: x[0], inputs=example_prompts, outputs=prompt, show_progress=False, queue=False)
 

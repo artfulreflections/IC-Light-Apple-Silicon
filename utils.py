@@ -368,6 +368,155 @@ def refine_mask(mask: np.ndarray, blur_radius: int = 0, expand: int = 0, thresho
     return result.clip(0, 1)
 
 
+# --- Foreground Preprocessing ---
+
+def adjust_brightness(img: np.ndarray, value: int) -> np.ndarray:
+    """
+    Adjust image brightness.
+
+    Args:
+        img: Input image (H, W, 3) uint8
+        value: Brightness adjustment (-100 to +100)
+
+    Returns:
+        Adjusted image (H, W, 3) uint8
+    """
+    if value == 0:
+        return img
+
+    img_float = img.astype(np.float32)
+    img_float += value
+    return img_float.clip(0, 255).astype(np.uint8)
+
+
+def adjust_contrast(img: np.ndarray, value: float) -> np.ndarray:
+    """
+    Adjust image contrast.
+
+    Args:
+        img: Input image (H, W, 3) uint8
+        value: Contrast multiplier (0.5 to 2.0, 1.0 = no change)
+
+    Returns:
+        Adjusted image (H, W, 3) uint8
+    """
+    if abs(value - 1.0) < 0.01:
+        return img
+
+    img_float = img.astype(np.float32)
+    # Scale around midpoint (127.5)
+    img_float = (img_float - 127.5) * value + 127.5
+    return img_float.clip(0, 255).astype(np.uint8)
+
+
+def adjust_saturation(img: np.ndarray, value: float) -> np.ndarray:
+    """
+    Adjust image saturation.
+
+    Args:
+        img: Input image (H, W, 3) uint8
+        value: Saturation multiplier (0.0 to 2.0, 1.0 = no change, 0.0 = grayscale)
+
+    Returns:
+        Adjusted image (H, W, 3) uint8
+    """
+    import cv2
+
+    if abs(value - 1.0) < 0.01:
+        return img
+
+    # Convert BGR to HSV
+    img_hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV).astype(np.float32)
+
+    # Adjust saturation channel
+    img_hsv[:, :, 1] *= value
+    img_hsv[:, :, 1] = img_hsv[:, :, 1].clip(0, 255)
+
+    # Convert back to RGB
+    img_hsv = img_hsv.astype(np.uint8)
+    return cv2.cvtColor(img_hsv, cv2.COLOR_HSV2RGB)
+
+
+def preprocess_foreground(img: np.ndarray, brightness: int = 0, contrast: float = 1.0, saturation: float = 1.0) -> np.ndarray:
+    """
+    Apply brightness, contrast, and saturation adjustments to foreground image.
+
+    Args:
+        img: Input image (H, W, 3) uint8
+        brightness: Brightness adjustment (-100 to +100, 0 = no change)
+        contrast: Contrast multiplier (0.5 to 2.0, 1.0 = no change)
+        saturation: Saturation multiplier (0.0 to 2.0, 1.0 = no change, 0.0 = grayscale)
+
+    Returns:
+        Preprocessed image (H, W, 3) uint8
+    """
+    # Apply adjustments in order: brightness -> contrast -> saturation
+    result = img
+
+    if brightness != 0:
+        result = adjust_brightness(result, brightness)
+
+    if abs(contrast - 1.0) >= 0.01:
+        result = adjust_contrast(result, contrast)
+
+    if abs(saturation - 1.0) >= 0.01:
+        result = adjust_saturation(result, saturation)
+
+    return result
+
+
+# --- Foreground Preview ---
+
+def preview_foreground(
+    img: np.ndarray,
+    rmbg_model: BriaRMBG,
+    device: torch.device,
+    brightness: int = 0,
+    contrast: float = 1.0,
+    saturation: float = 1.0,
+    sigma: float = 0.0,
+    blend_strength: float = 1.0,
+    mask_blur: int = 0,
+    mask_expand: int = 0,
+    mask_threshold: float = 0.5,
+) -> np.ndarray:
+    """
+    Generate preview of preprocessed foreground (final result before relighting).
+
+    Args:
+        img: Input image (H, W, 3) uint8
+        rmbg_model: Background removal model
+        device: Torch device
+        brightness: Brightness adjustment (-100 to +100)
+        contrast: Contrast multiplier (0.5 to 2.0)
+        saturation: Saturation multiplier (0.0 to 2.0)
+        sigma: Foreground brightness adjustment for blending
+        blend_strength: Alpha mask strength
+        mask_blur: Mask blur radius
+        mask_expand: Mask expansion/contraction
+        mask_threshold: Mask threshold value
+
+    Returns:
+        Preprocessed and masked foreground image (what will be fed to diffusion pipeline)
+    """
+    # Apply preprocessing (brightness/contrast/saturation)
+    preprocessed = preprocess_foreground(img, brightness=brightness, contrast=contrast, saturation=saturation)
+
+    # Apply background removal with mask refinement
+    masked, alpha = run_rmbg(
+        preprocessed,
+        rmbg_model,
+        device,
+        sigma=sigma,
+        blend_strength=blend_strength,
+        mask_blur=mask_blur,
+        mask_expand=mask_expand,
+        mask_threshold=mask_threshold,
+    )
+
+    return masked
+
+
 # --- Background Removal ---
 
 @torch.inference_mode()

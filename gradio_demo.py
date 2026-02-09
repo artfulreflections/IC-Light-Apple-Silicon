@@ -25,6 +25,8 @@ from utils import (
     move_models_to_device,
     numpy2pytorch,
     parse_common_args,
+    preprocess_foreground,
+    preview_foreground,
     pytorch2numpy,
     resize_and_center_crop,
     resize_without_crop,
@@ -233,6 +235,35 @@ def process_relight(input_fg, prompt, image_width, image_height, num_samples, se
         raise gr.Error(f"An error occurred: {e}")
 
 
+def process_preview_foreground(input_fg, fg_brightness, fg_contrast, fg_saturation, fg_sigma, fg_blend_strength, mask_blur, mask_expand, mask_threshold, progress=gr.Progress(track_tqdm=True)):
+    """Preview preprocessed foreground without running full relight."""
+    try:
+        if input_fg is None or (isinstance(input_fg, np.ndarray) and input_fg.size == 0):
+            raise gr.Error("Please upload an image in the 'Image' field before previewing")
+
+        progress(0, desc="Generating preview...")
+        preprocessed = preview_foreground(
+            input_fg,
+            rmbg,
+            device,
+            brightness=fg_brightness,
+            contrast=fg_contrast,
+            saturation=fg_saturation,
+            sigma=fg_sigma,
+            blend_strength=fg_blend_strength,
+            mask_blur=mask_blur,
+            mask_expand=mask_expand,
+            mask_threshold=mask_threshold,
+        )
+        progress(1.0, desc="Preview ready!")
+        return preprocessed
+    except gr.Error:
+        raise
+    except Exception as e:
+        logger.exception("Unexpected error during preview")
+        raise gr.Error(f"An error occurred: {e}")
+
+
 quick_prompts = [
     'sunshine from window',
     'neon light, city',
@@ -284,7 +315,11 @@ with block:
                                  info="None: Model decides lighting freely from prompt only. Left/Right/Top/Bottom: Creates a light-to-dark gradient as a starting point, biasing light toward that direction.")
             example_quick_subjects = gr.Dataset(samples=quick_subjects, label='Subject Quick List', samples_per_page=1000, components=[prompt])
             example_quick_prompts = gr.Dataset(samples=quick_prompts, label='Lighting Quick List', samples_per_page=1000, components=[prompt])
-            relight_button = gr.Button(value="Relight")
+
+            with gr.Row():
+                preview_button = gr.Button(value="👁️ Preview Foreground", variant="secondary")
+                relight_button = gr.Button(value="✨ Relight", variant="primary")
+                cancel_button = gr.Button(value="⏹️ Cancel", variant="stop")
 
             with gr.Row():
                 aspect_ratio = gr.Dropdown(
@@ -614,7 +649,17 @@ with block:
     )
 
     ips = [input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, fg_sigma, fg_blend_strength, mask_blur, mask_expand, mask_threshold, scheduler_dropdown]
-    relight_button.click(fn=process_relight, inputs=ips, outputs=[output_bg, result_gallery])
+    preview_ips = [input_fg, fg_brightness, fg_contrast, fg_saturation, fg_sigma, fg_blend_strength, mask_blur, mask_expand, mask_threshold]
+
+    # Wire up preview button (shows preprocessed foreground in "Preprocessed Foreground" section)
+    preview_event = preview_button.click(fn=process_preview_foreground, inputs=preview_ips, outputs=[output_bg])
+
+    # Wire up relight button (full processing)
+    relight_event = relight_button.click(fn=process_relight, inputs=ips, outputs=[output_bg, result_gallery])
+
+    # Wire up cancel button to stop both preview and relight operations
+    cancel_button.click(fn=None, cancels=[preview_event, relight_event])
+
     example_quick_prompts.click(lambda x, y: ', '.join(y.split(', ')[:2] + [x[0]]), inputs=[example_quick_prompts, prompt], outputs=prompt, show_progress=False, queue=False)
     example_quick_subjects.click(lambda x: x[0], inputs=example_quick_subjects, outputs=prompt, show_progress=False, queue=False)
 
