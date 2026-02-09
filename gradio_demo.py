@@ -211,10 +211,10 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
 
 
 @torch.inference_mode()
-def process_relight(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, fg_sigma, fg_blend_strength, scheduler_name, progress=gr.Progress(track_tqdm=True)):
+def process_relight(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, fg_sigma, fg_blend_strength, mask_blur, mask_expand, mask_threshold, scheduler_name, progress=gr.Progress(track_tqdm=True)):
     try:
         progress(0, desc="Removing background with RMBG...")
-        input_fg, matting = run_rmbg(input_fg, rmbg, device, sigma=fg_sigma, blend_strength=fg_blend_strength)
+        input_fg, matting = run_rmbg(input_fg, rmbg, device, sigma=fg_sigma, blend_strength=fg_blend_strength, mask_blur=mask_blur, mask_expand=mask_expand, mask_threshold=mask_threshold)
         progress(0.1, desc="Encoding foreground into latent space...")
         results = process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, fg_brightness=fg_brightness, fg_contrast=fg_contrast, fg_saturation=fg_saturation, scheduler_name=scheduler_name, progress=progress)
         save_outputs(results, args.output_dir, prefix='fc_relight', seed=seed)
@@ -343,6 +343,14 @@ with block:
                     info="-255 to +255. Brightness shift applied to foreground during background removal. Adjust if edges are too bright/dark.")
                 fg_blend_strength = gr.Slider(label="Blend Strength", minimum=0.0, maximum=1.0, value=1.0, step=0.01,
                     info="0.0 to 1.0. Controls alpha mask intensity. Lower values make background removal less aggressive, keeping more of original image.")
+
+                gr.Markdown("### Mask Refinement")
+                mask_blur = gr.Slider(label="Mask Blur", minimum=0, maximum=20, value=0, step=1,
+                    info="0 to 20 pixels. Softens mask edges. 0 = no blur, 3-5 = subtle, 10+ = very soft. Helps blend foreground naturally.")
+                mask_expand = gr.Slider(label="Mask Expand/Contract", minimum=-50, maximum=50, value=0, step=1,
+                    info="-50 to +50 pixels. Negative contracts (shrinks) mask, positive expands it. Use +5 to +15 to include more edges, -5 to -15 to remove edge artifacts.")
+                mask_threshold = gr.Slider(label="Mask Threshold", minimum=0.0, maximum=1.0, value=0.5, step=0.01,
+                    info="0.0 to 1.0. Creates sharp mask boundary. 0.5 = no effect (smooth gradient). <0.5 = more background, >0.5 = more foreground. Use 0.7-0.9 for clean cutout.")
 
                 a_prompt = gr.Textbox(label="Added Prompt", value='best quality',
                     info="Automatically appended to your prompt. Common boosters: 'best quality', 'detailed face', 'sharp focus', '8k'.")
@@ -605,7 +613,7 @@ with block:
         }"""
     )
 
-    ips = [input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, fg_sigma, fg_blend_strength, scheduler_dropdown]
+    ips = [input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source, fg_brightness, fg_contrast, fg_saturation, fg_sigma, fg_blend_strength, mask_blur, mask_expand, mask_threshold, scheduler_dropdown]
     relight_button.click(fn=process_relight, inputs=ips, outputs=[output_bg, result_gallery])
     example_quick_prompts.click(lambda x, y: ', '.join(y.split(', ')[:2] + [x[0]]), inputs=[example_quick_prompts, prompt], outputs=prompt, show_progress=False, queue=False)
     example_quick_subjects.click(lambda x: x[0], inputs=example_quick_subjects, outputs=prompt, show_progress=False, queue=False)

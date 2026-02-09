@@ -321,10 +321,57 @@ def resize_without_crop(image: np.ndarray, target_width: int, target_height: int
     return np.array(resized_image)
 
 
+# --- Mask Refinement ---
+
+def refine_mask(mask: np.ndarray, blur_radius: int = 0, expand: int = 0, threshold: float = 0.5) -> np.ndarray:
+    """
+    Refine alpha mask with blur, expand/contract, and threshold operations.
+
+    Args:
+        mask: Alpha mask (H, W) or (H, W, 1) with values in [0, 1]
+        blur_radius: Gaussian blur radius in pixels (0 = no blur, 1-10 typical range)
+        expand: Pixels to expand (positive) or contract (negative) the mask (-50 to +50 typical)
+        threshold: Binary threshold value (0.0 to 1.0). Values above threshold become 1.0, below become 0.0.
+                  Use 0.5 for no thresholding effect.
+
+    Returns:
+        Refined mask with same shape as input
+    """
+    import cv2
+
+    # Ensure 2D mask
+    if len(mask.shape) == 3:
+        mask = mask[:, :, 0]
+
+    result = mask.copy()
+
+    # 1. Expand/contract (morphological operations)
+    if expand != 0:
+        kernel_size = abs(expand) * 2 + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+        if expand > 0:
+            # Dilate to expand
+            result = cv2.dilate(result, kernel, iterations=1)
+        else:
+            # Erode to contract
+            result = cv2.erode(result, kernel, iterations=1)
+
+    # 2. Blur
+    if blur_radius > 0:
+        kernel_size = blur_radius * 2 + 1
+        result = cv2.GaussianBlur(result, (kernel_size, kernel_size), 0)
+
+    # 3. Threshold (only apply if significantly different from 0.5)
+    if abs(threshold - 0.5) > 0.01:
+        result = np.where(result > threshold, 1.0, 0.0).astype(np.float32)
+
+    return result.clip(0, 1)
+
+
 # --- Background Removal ---
 
 @torch.inference_mode()
-def run_rmbg(img: np.ndarray, rmbg_model: BriaRMBG, device: torch.device, sigma: float = 0.0, blend_strength: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
+def run_rmbg(img: np.ndarray, rmbg_model: BriaRMBG, device: torch.device, sigma: float = 0.0, blend_strength: float = 1.0, mask_blur: int = 0, mask_expand: int = 0, mask_threshold: float = 0.5) -> tuple[np.ndarray, np.ndarray]:
     """
     Remove background using RMBG model.
 
@@ -347,6 +394,10 @@ def run_rmbg(img: np.ndarray, rmbg_model: BriaRMBG, device: torch.device, sigma:
     alpha = torch.nn.functional.interpolate(alpha, size=(H, W), mode="bilinear")
     alpha = alpha.movedim(1, -1)[0]
     alpha = alpha.detach().float().cpu().numpy().clip(0, 1)
+
+    # Apply mask refinement (blur, expand/contract, threshold)
+    if mask_blur > 0 or mask_expand != 0 or abs(mask_threshold - 0.5) > 0.01:
+        alpha[:, :, 0] = refine_mask(alpha[:, :, 0], blur_radius=mask_blur, expand=mask_expand, threshold=mask_threshold)
 
     # Apply blend strength to alpha mask
     alpha = alpha * blend_strength
