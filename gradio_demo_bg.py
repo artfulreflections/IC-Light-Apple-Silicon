@@ -401,6 +401,7 @@ with block:
                     favorite_seeds_dropdown = gr.Dropdown(
                         label="Load Favorite Seed",
                         choices=get_favorite_seeds_choices(args.output_dir),
+                        value=None,
                         info="Select a previously saved favorite seed to load it.",
                         interactive=True
                     )
