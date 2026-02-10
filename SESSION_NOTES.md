@@ -1,6 +1,20 @@
 # Session Notes
 
-## Latest Session (2025-02-09)
+## Latest Session (2025-02-09) - Continued
+
+### Quick Fix: Favorite Seeds Dropdown Default
+
+**Issue**: "Load Favorite Seed" dropdown was auto-selecting the first saved seed instead of letting users choose explicitly.
+
+**Fix**: Added `value=None` to the dropdown in both demos:
+- `gradio_demo.py` (line 344)
+- `gradio_demo_bg.py` (line 404)
+
+**Status**: Code complete, syntax verified. Not tested due to disk space issues (need ~2-3GB for model downloads).
+
+---
+
+## Previous Session (2025-02-09)
 
 ### Implemented Features
 
